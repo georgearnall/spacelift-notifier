@@ -129,6 +129,22 @@ func nextInterval(cfg config, pendingCount, reqWindow int) time.Duration {
 	return d
 }
 
+// crlf normalizes line breaks to "\r\n" for output written while the tty
+// is in raw mode (see redraw's call site for why). It only inserts "\r"
+// before a "\n" that doesn't already have one, so it's safe to call on
+// text that might already contain a correct "\r\n".
+func crlf(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' && (i == 0 || s[i-1] != '\r') {
+			b.WriteByte('\r')
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
 func footer(res pollResult, cfg config, quitHint string) string {
 	next := nextInterval(cfg, len(res.items), res.reqWindow)
 	return fmt.Sprintf("polled %s · %d pending · requests: %d total, %d this hour (budget %d/hr) · next poll in %s%s\n",
@@ -199,7 +215,14 @@ func runWatch(cfg config) {
 		}
 		b.WriteString(ui.RenderTable(renderRows(last.items, selected), linksSupported, colorEnabled))
 		b.WriteString(ui.Style(footer(last, cfg, " · q to quit"), ui.Dim, colorEnabled))
-		fmt.Print(b.String())
+		// readKeys puts the tty into raw mode, which on Unix also clears
+		// the OPOST output flag for the whole tty (stdin/stdout share
+		// one underlying device) - without it, a bare "\n" no longer
+		// implies a carriage return, so every line after the first
+		// continues from whatever column the previous line ended at
+		// instead of resetting to column 0. Normalize to "\r\n" so this
+		// renders correctly regardless of OPOST state.
+		fmt.Print(crlf(b.String()))
 	}
 
 	poll := func() time.Duration {

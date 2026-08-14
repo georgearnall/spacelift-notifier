@@ -204,6 +204,24 @@ func TestDoPoll_PropagatesQueryError(t *testing.T) {
 	}
 }
 
+func TestCRLF(t *testing.T) {
+	in := "no pending confirmations for your team\npolled 12:00:00 · 0 pending\n"
+	want := "no pending confirmations for your team\r\npolled 12:00:00 · 0 pending\r\n"
+	if got := crlf(in); got != want {
+		t.Errorf("crlf() = %q, want %q", got, want)
+	}
+}
+
+func TestCRLF_DoesNotDoubleUpExistingCR(t *testing.T) {
+	// Guards against a naive fix that would turn an already-correct
+	// "\r\n" into "\r\r\n".
+	in := "already\r\ncorrect\n"
+	want := "already\r\ncorrect\r\n"
+	if got := crlf(in); got != want {
+		t.Errorf("crlf() = %q, want %q", got, want)
+	}
+}
+
 func TestFooter_ContainsKeyStats(t *testing.T) {
 	res := pollResult{polledAt: time.Now(), items: make([]pending.PendingConfirmation, 2), reqTotal: 5, reqWindow: 3}
 	cfg := config{requestBudget: 300, activeInterval: 20 * time.Second, idleInterval: 60 * time.Second}
