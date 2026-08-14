@@ -38,8 +38,8 @@ spacelift-notifier never calls a Spacelift mutation - it only reads and links.
 // Without this, "--team-label foo" would silently still match the built-in
 // default alongside foo, which is surprising.
 type stringList struct {
-	values    []string
-	userSet   bool
+	values  []string
+	userSet bool
 }
 
 func (s *stringList) String() string {
