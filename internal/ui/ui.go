@@ -25,10 +25,34 @@ type Row struct {
 
 const linkText = "open →"
 
+// SGR color/style codes used to highlight the table. Combined codes
+// (e.g. BoldYellow) are single escape sequences rather than two Style()
+// calls, so nesting them inside an already-styled cell can't produce a
+// stray extra Reset in the middle.
+const (
+	Reset      = "\x1b[0m"
+	Bold       = "\x1b[1m"
+	Dim        = "\x1b[2m"
+	Cyan       = "\x1b[36m"
+	BoldRed    = "\x1b[1;31m"
+	BoldYellow = "\x1b[1;33m"
+)
+
+// Style wraps s in the given SGR code if enabled is true and s is
+// non-empty; otherwise it returns s unchanged.
+func Style(s, code string, enabled bool) string {
+	if !enabled || s == "" {
+		return s
+	}
+	return code + s + Reset
+}
+
 // RenderTable renders rows as an aligned table. When linksSupported is
 // true, the LINK column is an OSC 8 hyperlink; otherwise it falls back to
-// printing the raw URL so it can still be copied.
-func RenderTable(rows []Row, linksSupported bool) string {
+// printing the raw URL so it can still be copied. When colorEnabled is
+// true, the header is bold, the TEAM column is cyan, the AGE column is
+// dim, and the selected row's marker is highlighted.
+func RenderTable(rows []Row, linksSupported, colorEnabled bool) string {
 	if len(rows) == 0 {
 		return "no pending confirmations for your team\n"
 	}
@@ -61,22 +85,64 @@ func RenderTable(rows []Row, linksSupported bool) string {
 	}
 
 	var b strings.Builder
-	writeRow := func(row []string) {
-		for i, c := range row {
-			if i == len(row)-1 {
-				b.WriteString(c)
-				continue
+
+	writeHeader := func() {
+		for i, h := range headers {
+			cell := h
+			if i != len(headers)-1 {
+				cell = fmt.Sprintf("%-*s", widths[i], h)
 			}
-			fmt.Fprintf(&b, "%-*s  ", widths[i], c)
+			b.WriteString(Style(cell, Bold, colorEnabled))
+			if i != len(headers)-1 {
+				b.WriteString("  ")
+			}
 		}
 		b.WriteByte('\n')
 	}
 
-	writeRow(headers)
-	for _, row := range cells {
-		writeRow(row)
+	writeDataRow := func(row []string, r Row) {
+		for i, c := range row {
+			if i == len(row)-1 {
+				b.WriteString(styleCell(i, c, r, colorEnabled))
+				continue
+			}
+			padded := fmt.Sprintf("%-*s", widths[i], c)
+			b.WriteString(styleCell(i, padded, r, colorEnabled))
+			b.WriteString("  ")
+		}
+		b.WriteByte('\n')
+	}
+
+	writeHeader()
+	for i, row := range cells {
+		writeDataRow(row, rows[i])
 	}
 	return b.String()
+}
+
+// styleCell applies per-column coloring: TEAM is cyan, AGE is dim, the
+// marker is highlighted when its row is selected, and the remaining
+// columns are bolded on the selected row for a full-row highlight.
+func styleCell(col int, s string, r Row, colorEnabled bool) string {
+	if !colorEnabled {
+		return s
+	}
+	switch col {
+	case 0: // marker
+		if r.Selected {
+			return Style(s, BoldYellow, true)
+		}
+		return s
+	case 1: // team
+		return Style(s, Cyan, true)
+	case 4: // age
+		return Style(s, Dim, true)
+	default:
+		if r.Selected {
+			return Style(s, Bold, true)
+		}
+		return s
+	}
 }
 
 func truncate(s string, max int) string {
@@ -120,6 +186,16 @@ func SupportsLinks() bool {
 
 func isTTY(f *os.File) bool {
 	return term.IsTerminal(int(f.Fd()))
+}
+
+// ColorEnabled reports whether ANSI color output should be used: it's
+// suppressed when stdout isn't a terminal (e.g. output is piped/redirected)
+// or when NO_COLOR is set, per the https://no-color.org convention.
+func ColorEnabled() bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	return isTTY(os.Stdout)
 }
 
 func envSupportsLinks(getenv func(string) string) bool {

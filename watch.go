@@ -19,8 +19,15 @@ import (
 const (
 	ansiAltScreenOn  = "\x1b[?1049h\x1b[H\x1b[?25l"
 	ansiAltScreenOff = "\x1b[?25h\x1b[?1049l"
-	ansiHome         = "\x1b[H"
-	ansiClearBelow   = "\x1b[J"
+
+	// ansiClearScreen clears the entire screen and homes the cursor. A
+	// full clear (rather than just homing the cursor and overwriting)
+	// avoids ghosting: if a new frame is narrower or shorter than the
+	// previous one (e.g. the pending count just dropped to zero, or the
+	// terminal was resized), simply overwriting from the top leaves
+	// stale characters from the old, wider frame visible past the end of
+	// the new, shorter lines.
+	ansiClearScreen = "\x1b[2J\x1b[H"
 
 	// lowBudgetFloor is the poll delay once the self-imposed request
 	// budget for the current hour has been used up.
@@ -152,8 +159,9 @@ func runOnce(cfg config) {
 	}
 
 	linksSupported := ui.SupportsLinks()
-	fmt.Print(ui.RenderTable(renderRows(res.items, -1), linksSupported))
-	fmt.Print(footer(res, cfg, ""))
+	colorEnabled := ui.ColorEnabled()
+	fmt.Print(ui.RenderTable(renderRows(res.items, -1), linksSupported, colorEnabled))
+	fmt.Print(ui.Style(footer(res, cfg, ""), ui.Dim, colorEnabled))
 }
 
 func runWatch(cfg config) {
@@ -168,6 +176,7 @@ func runWatch(cfg config) {
 	}
 	notifier := notify.New()
 	linksSupported := ui.SupportsLinks()
+	colorEnabled := ui.ColorEnabled()
 
 	fmt.Print(ansiAltScreenOn)
 	defer fmt.Print(ansiAltScreenOff)
@@ -184,13 +193,12 @@ func runWatch(cfg config) {
 
 	redraw := func() {
 		var b strings.Builder
-		b.WriteString(ansiHome)
+		b.WriteString(ansiClearScreen)
 		if last.err != nil {
-			fmt.Fprintf(&b, "spacelift-notifier: poll error (retrying): %v\n\n", last.err)
+			b.WriteString(ui.Style(fmt.Sprintf("spacelift-notifier: poll error (retrying): %v\n\n", last.err), ui.BoldRed, colorEnabled))
 		}
-		b.WriteString(ui.RenderTable(renderRows(last.items, selected), linksSupported))
-		b.WriteString(footer(last, cfg, " · q to quit"))
-		b.WriteString(ansiClearBelow)
+		b.WriteString(ui.RenderTable(renderRows(last.items, selected), linksSupported, colorEnabled))
+		b.WriteString(ui.Style(footer(last, cfg, " · q to quit"), ui.Dim, colorEnabled))
 		fmt.Print(b.String())
 	}
 
