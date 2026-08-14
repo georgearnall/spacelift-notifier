@@ -64,7 +64,11 @@ type config struct {
 	noNotify       bool
 }
 
-func main() {
+// parseFlags builds the default config and applies args on top of it.
+// Factored out from main so flag-parsing behavior (in particular
+// stringList's replace-on-first-set semantics) can be exercised directly
+// in tests without going through os.Args/os.Exit.
+func parseFlags(args []string) (config, error) {
 	cfg := config{
 		activeInterval: 20 * time.Second,
 		idleInterval:   60 * time.Second,
@@ -72,7 +76,7 @@ func main() {
 	}
 	cfg.teamLabels.values = []string{"folder:owning-team/ecommerce"}
 
-	fs := flag.NewFlagSet("spacelift-notifier", flag.ExitOnError)
+	fs := flag.NewFlagSet("spacelift-notifier", flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, helpText) }
 	fs.Var(&cfg.teamLabels, "team-label", "exact stack label to match as 'your team' (repeatable)")
 	fs.DurationVar(&cfg.activeInterval, "interval", cfg.activeInterval, "poll interval while runs are pending")
@@ -80,7 +84,19 @@ func main() {
 	fs.IntVar(&cfg.requestBudget, "request-budget", cfg.requestBudget, "self-imposed API request budget per hour")
 	fs.BoolVar(&cfg.once, "once", false, "run a single poll cycle and exit")
 	fs.BoolVar(&cfg.noNotify, "no-notify", false, "suppress desktop notifications")
-	if err := fs.Parse(os.Args[1:]); err != nil {
+
+	if err := fs.Parse(args); err != nil {
+		return config{}, err
+	}
+	return cfg, nil
+}
+
+func main() {
+	cfg, err := parseFlags(os.Args[1:])
+	if err != nil {
+		if err == flag.ErrHelp {
+			os.Exit(0)
+		}
 		os.Exit(2)
 	}
 
