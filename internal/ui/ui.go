@@ -12,13 +12,15 @@ import (
 	"golang.org/x/term"
 )
 
-// Row is one already-formatted table row.
+// Row is one already-formatted table row. Selected marks the row as the
+// keyboard-navigation cursor's current target, shown as a leading marker.
 type Row struct {
-	Team  string
-	Stack string
-	Title string
-	Age   string
-	URL   string
+	Team     string
+	Stack    string
+	Title    string
+	Age      string
+	URL      string
+	Selected bool
 }
 
 const linkText = "open →"
@@ -31,7 +33,7 @@ func RenderTable(rows []Row, linksSupported bool) string {
 		return "no pending confirmations for your team\n"
 	}
 
-	headers := []string{"TEAM", "STACK", "TITLE", "AGE", "LINK"}
+	headers := []string{"", "TEAM", "STACK", "TITLE", "AGE", "LINK"}
 	widths := make([]int, len(headers))
 	for i, h := range headers {
 		widths[i] = len(h)
@@ -43,7 +45,11 @@ func RenderTable(rows []Row, linksSupported bool) string {
 		if linksSupported {
 			link = Hyperlink(r.URL, linkText)
 		}
-		cells[i] = []string{r.Team, r.Stack, truncate(r.Title, 60), r.Age, link}
+		marker := " "
+		if r.Selected {
+			marker = ">"
+		}
+		cells[i] = []string{marker, r.Team, r.Stack, truncate(r.Title, 60), r.Age, link}
 		// The LINK column is last and never padded, so its width (which
 		// includes invisible escape bytes when hyperlinked) doesn't
 		// affect alignment of the columns before it.
