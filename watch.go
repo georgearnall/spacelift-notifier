@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/georgearnall/spacelift-notifier/internal/labels"
@@ -198,9 +200,18 @@ func runWatch(cfg config) {
 	defer fmt.Print(ansiAltScreenOff)
 
 	done := make(chan struct{})
-	keys := readKeys(done)
+	keys, restoreTerminal := readKeys(done)
+	// Deferred here at the top level rather than left to readKeys' own
+	// goroutine (which spends its life blocked on a read syscall that
+	// can't be interrupted) - see readKeys' doc comment. This runs on
+	// every return from runWatch, including panics.
+	defer restoreTerminal()
 	resized := watchResize(done)
 	defer close(done)
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sig)
 
 	var (
 		last     pollResult
@@ -276,6 +287,8 @@ func runWatch(cfg config) {
 			}
 		case <-resized:
 			redraw()
+		case <-sig:
+			return // let the deferred restoreTerminal/ansiAltScreenOff run before exiting
 		}
 	}
 }

@@ -33,10 +33,11 @@ func TestReadKeys_NonTerminalNeverSends(t *testing.T) {
 	done := make(chan struct{})
 	defer close(done)
 
-	ch := readKeys(done)
+	ch, restore := readKeys(done)
 	select {
 	case k := <-ch:
 		t.Fatalf("readKeys() sent %v on a non-terminal stdin, want no sends", k)
 	default:
 	}
+	restore() // must be a safe no-op when stdin was never put into raw mode
 }

@@ -22,20 +22,31 @@ const (
 // stdin is closed. If stdin isn't a terminal (e.g. input is redirected),
 // it returns a channel that never sends, and the watch loop simply runs
 // on its poll timer with no keyboard interaction.
-func readKeys(done <-chan struct{}) <-chan key {
+//
+// It also returns a restore function that puts the terminal back the way
+// it found it. The caller MUST defer this at the top level of whatever
+// function put the terminal into raw mode, rather than relying on the
+// reader goroutine to restore it itself: that goroutine spends nearly
+// all its life blocked inside os.Stdin.Read, which has no way to be
+// interrupted by closing done, so a restore left only in the goroutine's
+// own defer would in practice never run - leaving the tty (and every
+// other program run in that terminal afterward) stuck in raw mode.
+func readKeys(done <-chan struct{}) (<-chan key, func()) {
 	ch := make(chan key)
+	noop := func() {}
+
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		return ch
+		return ch, noop
 	}
 
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
-		return ch
+		return ch, noop
 	}
+	restore := func() { term.Restore(fd, oldState) }
 
 	go func() {
-		defer term.Restore(fd, oldState)
 		buf := make([]byte, 3)
 		for {
 			n, err := os.Stdin.Read(buf)
@@ -53,7 +64,7 @@ func readKeys(done <-chan struct{}) <-chan key {
 			}
 		}
 	}()
-	return ch
+	return ch, restore
 }
 
 func decodeKey(b []byte) key {
