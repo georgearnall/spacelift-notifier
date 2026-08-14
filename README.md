@@ -21,6 +21,22 @@ See `spacelift-notifier --help` for the full flag list. Notably:
   replaces the default rather than adding to it.
 - `--once` - run a single poll cycle, print results, and exit.
 
+Note: Spacelift stacks distinguish stacks your team *owns*
+(`folder:owning-team/<team>`) from stacks your team *collaborates on*
+(`folder:collab-team/<team>`). These are separate labels - if you want
+collaborator stacks to show up too, add both, e.g.:
+
+```
+spacelift-notifier --team-label folder:owning-team/ecommerce --team-label folder:collab-team/ecommerce
+```
+
+## Keyboard shortcuts (watch mode)
+
+- `↑` / `↓` - move the selection cursor
+- `Enter` - open the selected run in your browser (fallback for terminals
+  that don't render the clickable OSC 8 links directly in the table)
+- `q` / `Ctrl-C` - quit
+
 ## Authentication
 
 Uses whatever Spacelift profile is currently selected via the `spacectl` CLI
