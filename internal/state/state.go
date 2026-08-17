@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/georgearnall/spacelift-notifier/internal/configdir"
 )
 
 // RunRecord tracks when a run was first observed pending confirmation.
@@ -61,17 +63,13 @@ func (s *State) Observe(pendingIDs []string, now time.Time) (newlyPending []stri
 	return newlyPending
 }
 
-// statePath returns where state.json lives, following the
-// $XDG_CONFIG_HOME convention with a ~/.config fallback.
+// statePath returns where state.json lives.
 func statePath() (string, error) {
-	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "spacelift-notifier", "state.json"), nil
-	}
-	home, err := os.UserHomeDir()
+	dir, err := configdir.Dir()
 	if err != nil {
-		return "", fmt.Errorf("determining home directory: %w", err)
+		return "", err
 	}
-	return filepath.Join(home, ".config", "spacelift-notifier", "state.json"), nil
+	return filepath.Join(dir, "state.json"), nil
 }
 
 // Load reads the persisted state from disk, returning a fresh empty State

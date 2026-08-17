@@ -19,10 +19,17 @@ Usage:
   spacelift-notifier [flags]
 
 Flags:
+  --team value              Your Spacelift team name. Persisted to config.json
+                            and used to watch both folder:owning-team/<value>
+                            and folder:collab-team/<value> stack labels.
+                            Updates the persisted team if one already exists.
+                            If neither this nor --team-label is given and no
+                            team is configured yet, you'll be prompted for one
+                            (once) on startup.
   --team-label value       Stack label that must match exactly for a stack to be
                             considered yours (repeatable; supplying this flag
-                            replaces the default rather than adding to it).
-                            Default: folder:owning-team/ecommerce
+                            replaces the default rather than adding to it, and
+                            bypasses --team/config.json entirely).
   --interval duration       Poll interval while there are pending confirmations (default 20s)
   --idle-interval duration  Poll interval while there are none (default 60s)
   --request-budget int      Self-imposed cap on API requests per hour (default 300)
@@ -56,6 +63,7 @@ func (s *stringList) Set(v string) error {
 }
 
 type config struct {
+	team           string
 	teamLabels     stringList
 	activeInterval time.Duration
 	idleInterval   time.Duration
@@ -74,11 +82,11 @@ func parseFlags(args []string) (config, error) {
 		idleInterval:   60 * time.Second,
 		requestBudget:  300,
 	}
-	cfg.teamLabels.values = []string{"folder:owning-team/ecommerce"}
 
 	fs := flag.NewFlagSet("spacelift-notifier", flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, helpText) }
-	fs.Var(&cfg.teamLabels, "team-label", "exact stack label to match as 'your team' (repeatable)")
+	fs.StringVar(&cfg.team, "team", "", "your Spacelift team name (persisted; derives folder:owning-team/<name> and folder:collab-team/<name>)")
+	fs.Var(&cfg.teamLabels, "team-label", "exact stack label to match as 'your team' (repeatable; bypasses --team/config.json)")
 	fs.DurationVar(&cfg.activeInterval, "interval", cfg.activeInterval, "poll interval while runs are pending")
 	fs.DurationVar(&cfg.idleInterval, "idle-interval", cfg.idleInterval, "poll interval while idle")
 	fs.IntVar(&cfg.requestBudget, "request-budget", cfg.requestBudget, "self-imposed API request budget per hour")
@@ -98,6 +106,10 @@ func main() {
 			os.Exit(0)
 		}
 		os.Exit(2)
+	}
+
+	if err := resolveTeamLabels(&cfg, promptForTeam); err != nil {
+		fail("%v", err)
 	}
 
 	if cfg.once {

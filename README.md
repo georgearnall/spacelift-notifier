@@ -16,18 +16,28 @@ spacelift-notifier [flags]
 
 See `spacelift-notifier --help` for the full flag list. Notably:
 
-- `--team-label` (repeatable) - exact stack label that marks a stack as
-  yours. Default: `folder:owning-team/ecommerce`. Supplying this flag
-  replaces the default rather than adding to it.
+- `--team` - your Spacelift team name. Persisted to
+  `~/.config/spacelift-notifier/config.json` so you only enter it once, and
+  used to watch both label conventions Spacelift has for team ownership:
+  stacks your team *owns* (`folder:owning-team/<team>`) and stacks it
+  *collaborates on* (`folder:collab-team/<team>`).
+- `--team-label` (repeatable) - exact stack label to match instead, for full
+  manual control. Bypasses `--team`/`config.json` entirely.
 - `--once` - run a single poll cycle, print results, and exit.
 
-Note: Spacelift stacks distinguish stacks your team *owns*
-(`folder:owning-team/<team>`) from stacks your team *collaborates on*
-(`folder:collab-team/<team>`). These are separate labels - if you want
-collaborator stacks to show up too, add both, e.g.:
+If you haven't configured a team yet and don't pass `--team`/`--team-label`,
+the tool prompts for your team name interactively the first time it runs,
+then remembers it for next time:
 
 ```
-spacelift-notifier --team-label folder:owning-team/ecommerce --team-label folder:collab-team/ecommerce
+$ spacelift-notifier --once
+No team configured. Enter your Spacelift team name (used in folder:owning-team/<name> and folder:collab-team/<name> labels): ecommerce
+```
+
+To change the stored team later, pass `--team` again:
+
+```
+spacelift-notifier --team atlas
 ```
 
 ## Keyboard shortcuts (watch mode)

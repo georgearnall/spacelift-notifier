@@ -43,8 +43,11 @@ func TestParseFlags_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseFlags(nil) error = %v", err)
 	}
-	if len(cfg.teamLabels.values) != 1 || cfg.teamLabels.values[0] != "folder:owning-team/ecommerce" {
-		t.Errorf("default team labels = %v", cfg.teamLabels.values)
+	if len(cfg.teamLabels.values) != 0 {
+		t.Errorf("default team labels = %v, want none (resolved later by resolveTeamLabels)", cfg.teamLabels.values)
+	}
+	if cfg.team != "" {
+		t.Errorf("default team = %q, want empty", cfg.team)
 	}
 	if cfg.activeInterval != 20*time.Second || cfg.idleInterval != 60*time.Second {
 		t.Errorf("default intervals = %v/%v, want 20s/60s", cfg.activeInterval, cfg.idleInterval)
