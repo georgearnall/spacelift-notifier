@@ -14,6 +14,9 @@ links; you do the confirming.
 brew install georgearnall/tap/spacelift-notifier
 ```
 
+If Homebrew refuses with `Refusing to load formula ... from untrusted tap`,
+trust the tap first: `brew trust georgearnall/tap`.
+
 ## Usage
 
 ```
