@@ -8,6 +8,12 @@ in the browser.
 Read-only: this tool never calls a Spacelift mutation. It only detects and
 links; you do the confirming.
 
+## Installation
+
+```
+brew install georgearnall/tap/spacelift-notifier
+```
+
 ## Usage
 
 ```
