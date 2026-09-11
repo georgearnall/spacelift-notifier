@@ -36,12 +36,16 @@ const (
 	lowBudgetFloor = 5 * time.Minute
 )
 
-// pollResult holds the outcome of a single poll cycle.
+// pollResult holds the outcome of a single poll cycle, plus any outcome of
+// a relogin attempt the user triggered in response to it (reloginErr is
+// not itself part of polling - it's carried on the same struct because
+// runWatch keeps only a single "last" pollResult as its display state).
 type pollResult struct {
 	items               []pending.PendingConfirmation
 	newlyPendingIDs     []string
 	err                 error
 	authExpired         bool
+	reloginErr          error
 	polledAt            time.Time
 	reqTotal, reqWindow int
 }
@@ -232,6 +236,8 @@ func runWatch(cfg config) {
 		var b strings.Builder
 		b.WriteString(ansiClearScreen)
 		switch {
+		case last.reloginErr != nil:
+			b.WriteString(ui.Style(fmt.Sprintf("spacelift-notifier: relogin failed: %v (press l to retry)\n\n", last.reloginErr), ui.BoldRed, colorEnabled))
 		case last.authExpired:
 			b.WriteString(ui.Style("spacelift-notifier: session expired - press l to relogin\n\n", ui.BoldRed, colorEnabled))
 		case last.err != nil:
@@ -303,10 +309,10 @@ func runWatch(cfg config) {
 				}
 			case keyRelogin:
 				if last.authExpired {
-					if newClient, err := relogin(ctx, restoreTerminal); err != nil {
-						last.err = err
+					if err := relogin(ctx, c.Reauth, restoreTerminal); err != nil {
+						last.reloginErr = err
 					} else {
-						c = newClient
+						last.reloginErr = nil
 						timer.Reset(0) // poll again immediately with the fresh session
 					}
 					redraw()
@@ -321,12 +327,14 @@ func runWatch(cfg config) {
 }
 
 // relogin pauses the TUI, runs `spacectl profile login` interactively so
-// the user can complete the browser-based re-auth flow, then rebuilds the
-// Spacelift client from the refreshed profile. The existing client can't
-// simply be reused afterward: it captured its SDK session once at
-// construction, and relogging in only rewrites ~/.spacelift/config.json -
-// it doesn't update that in-memory session.
-func relogin(ctx context.Context, restoreTerminal func()) (*spaceclient.Client, error) {
+// the user can complete the browser-based re-auth flow, then calls reauth
+// (normally (*spaceclient.Client).Reauth) to rebuild the SDK session from
+// the now-refreshed profile in place - preserving that client's
+// request-count/budget accounting, unlike building a brand new Client
+// would. reauth is a parameter (rather than calling the method directly)
+// so tests can exercise relogin's control flow without a real Spacelift
+// profile on disk.
+func relogin(ctx context.Context, reauth func(context.Context) error, restoreTerminal func()) error {
 	fmt.Print(ansiAltScreenOff)
 	restoreTerminal()
 	defer func() {
@@ -335,17 +343,25 @@ func relogin(ctx context.Context, restoreTerminal func()) (*spaceclient.Client, 
 	}()
 
 	fmt.Println("spacelift-notifier: running `spacectl profile login`...")
+	if err := runSpacectlLogin(); err != nil {
+		return fmt.Errorf("spacectl profile login: %w", err)
+	}
+	return reauth(ctx)
+}
+
+// runSpacectlLogin shells out to the real spacectl binary to run its
+// interactive, browser-based re-auth flow (spacectl's login internals live
+// in an internal/ package of that module and can't be called directly).
+// Stdin is deliberately left unset: the login flow needs no keyboard
+// input, and wiring up stdin here would race with the key-reader goroutine
+// that's permanently blocked reading os.Stdin (see readKeys' doc comment).
+// Overridden in tests so relogin's control flow can be exercised without
+// actually shelling out.
+var runSpacectlLogin = func() error {
 	cmd := exec.Command("spacectl", "profile", "login")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// Stdin is deliberately left unset: the login flow is browser-driven
-	// and needs no keyboard input, and wiring up stdin here would race
-	// with the key-reader goroutine that's permanently blocked reading
-	// os.Stdin (see readKeys' doc comment).
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("spacectl profile login: %w", err)
-	}
-	return spaceclient.New(ctx)
+	return cmd.Run()
 }
 
 // runOpen launches the OS's "open a URL" command. Overridden in tests so

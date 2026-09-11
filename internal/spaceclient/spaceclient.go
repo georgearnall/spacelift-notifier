@@ -30,17 +30,39 @@ type Client struct {
 	now          func() time.Time
 }
 
+// newSession loads the current spacectl session. Indirected through a var
+// (rather than calling session.New directly) so tests can substitute a
+// fake session - exercising Reauth's counter-preserving behavior - without
+// a real Spacelift profile on disk.
+var newSession = session.New
+
 // New builds a Client authenticated via whatever Spacelift profile is
 // currently active for the spacectl CLI (environment variables take
 // precedence if set, otherwise ~/.spacelift/config.json's selected
 // profile - see session.New).
 func New(ctx context.Context) (*Client, error) {
-	hc := client.GetHTTPClient()
-	sess, err := session.New(ctx, hc)
-	if err != nil {
-		return nil, fmt.Errorf("loading spacelift session (is `spacectl profile login` set up?): %w", err)
+	c := &Client{now: time.Now}
+	if err := c.Reauth(ctx); err != nil {
+		return nil, err
 	}
-	return &Client{sdk: client.New(hc, sess), now: time.Now}, nil
+	return c, nil
+}
+
+// Reauth rebuilds the underlying SDK session from whatever Spacelift
+// profile is currently active, e.g. after the caller has re-run `spacectl
+// profile login` to recover from an expired session. Unlike calling New
+// again, this preserves the Client's existing request-count/budget
+// accounting rather than resetting it.
+func (c *Client) Reauth(ctx context.Context) error {
+	hc := client.GetHTTPClient()
+	sess, err := newSession(ctx, hc)
+	if err != nil {
+		return fmt.Errorf("loading spacelift session (is `spacectl profile login` set up?): %w", err)
+	}
+	c.mu.Lock()
+	c.sdk = client.New(hc, sess)
+	c.mu.Unlock()
+	return nil
 }
 
 // NewFromSDK builds a Client around an already-constructed SDK client.

@@ -3,6 +3,7 @@ package spaceclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -149,5 +150,59 @@ func TestClient_Query_MarshalsVariables(t *testing.T) {
 	gotInput, ok := gotVars["input"].(map[string]any)
 	if !ok || gotInput["first"] != float64(50) {
 		t.Errorf("variables.input = %v, want {first: 50}", gotVars["input"])
+	}
+}
+
+// withFakeSession substitutes newSession for the duration of the test so
+// Reauth can be exercised against an httptest.Server instead of a real
+// Spacelift profile on disk.
+func withFakeSession(t *testing.T, sess session.Session, err error) {
+	t.Helper()
+	orig := newSession
+	t.Cleanup(func() { newSession = orig })
+	newSession = func(context.Context, *http.Client) (session.Session, error) { return sess, err }
+}
+
+func TestClient_Reauth_PreservesRequestCounters(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":{}}`)
+	})
+
+	var out struct{}
+	if err := c.Query(context.Background(), &out, nil); err != nil {
+		t.Fatal(err)
+	}
+	if total, window := c.Stats(); total != 1 || window != 1 {
+		t.Fatalf("Stats() before Reauth = (%d, %d), want (1, 1)", total, window)
+	}
+
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":{}}`)
+	}))
+	defer srv2.Close()
+	withFakeSession(t, fakeSession{endpoint: srv2.URL}, nil)
+
+	if err := c.Reauth(context.Background()); err != nil {
+		t.Fatalf("Reauth() error = %v", err)
+	}
+	if err := c.Query(context.Background(), &out, nil); err != nil {
+		t.Fatal(err)
+	}
+	if total, window := c.Stats(); total != 2 || window != 2 {
+		t.Errorf("Stats() after Reauth = (%d, %d), want (2, 2) - Reauth must preserve the request budget, not reset it", total, window)
+	}
+}
+
+func TestClient_Reauth_PropagatesSessionError(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {})
+	wantErr := errors.New("no current profile is set")
+	withFakeSession(t, nil, wantErr)
+
+	err := c.Reauth(context.Background())
+	if err == nil {
+		t.Fatal("Reauth() error = nil, want the session error to propagate")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("Reauth() error = %v, want it to wrap %v", err, wantErr)
 	}
 }

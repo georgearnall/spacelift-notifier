@@ -243,6 +243,70 @@ func TestDoPoll_SetsAuthExpiredOnUnauthorizedError(t *testing.T) {
 	}
 }
 
+// withFakeSpacectlLogin substitutes runSpacectlLogin for the duration of
+// the test, so relogin's control flow can be exercised without actually
+// shelling out to the spacectl binary.
+func withFakeSpacectlLogin(t *testing.T, err error) {
+	t.Helper()
+	orig := runSpacectlLogin
+	t.Cleanup(func() { runSpacectlLogin = orig })
+	runSpacectlLogin = func() error { return err }
+}
+
+func TestRelogin_Success(t *testing.T) {
+	withFakeSpacectlLogin(t, nil)
+
+	var restored, reauthed bool
+	err := relogin(context.Background(), func(context.Context) error {
+		reauthed = true
+		return nil
+	}, func() { restored = true })
+
+	if err != nil {
+		t.Fatalf("relogin() error = %v", err)
+	}
+	if !restored {
+		t.Error("relogin() did not call restoreTerminal")
+	}
+	if !reauthed {
+		t.Error("relogin() did not call reauth after a successful login")
+	}
+}
+
+func TestRelogin_LoginCommandFails(t *testing.T) {
+	wantErr := errors.New("spacectl not found")
+	withFakeSpacectlLogin(t, wantErr)
+
+	reauthed := false
+	err := relogin(context.Background(), func(context.Context) error {
+		reauthed = true
+		return nil
+	}, func() {})
+
+	if err == nil {
+		t.Fatal("relogin() error = nil, want the login command's error to propagate")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("relogin() error = %v, want it to wrap %v", err, wantErr)
+	}
+	if reauthed {
+		t.Error("relogin() called reauth despite the login command failing")
+	}
+}
+
+func TestRelogin_ReauthFails(t *testing.T) {
+	withFakeSpacectlLogin(t, nil)
+
+	wantErr := errors.New("loading spacelift session: boom")
+	err := relogin(context.Background(), func(context.Context) error {
+		return wantErr
+	}, func() {})
+
+	if !errors.Is(err, wantErr) {
+		t.Errorf("relogin() error = %v, want %v", err, wantErr)
+	}
+}
+
 func TestCRLF(t *testing.T) {
 	in := "no pending confirmations for your team\npolled 12:00:00 · 0 pending\n"
 	want := "no pending confirmations for your team\r\npolled 12:00:00 · 0 pending\r\n"
