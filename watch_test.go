@@ -436,11 +436,26 @@ func TestRunSpacectlLogin_KilledOnInterrupt(t *testing.T) {
 	t.Cleanup(func() { spacectlLoginCommand = orig })
 	spacectlLoginCommand = func() *exec.Cmd { return exec.Command("sleep", "30") }
 
+	// Synchronize on the interrupt handler actually being registered,
+	// rather than guessing with a sleep: signalling too early would hit
+	// the process's default disposition for the signal instead of
+	// runSpacectlLogin's handler, which - for an unhandled os.Interrupt -
+	// would terminate the entire test binary rather than just failing
+	// this test.
+	registered := make(chan struct{})
+	origHook := afterSignalRegistered
+	t.Cleanup(func() { afterSignalRegistered = origHook })
+	afterSignalRegistered = func() { close(registered) }
+
 	done := make(chan error, 1)
 	go func() { done <- runSpacectlLogin() }()
 
-	// Give the subprocess a moment to actually start before signalling.
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-registered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runSpacectlLogin() never registered its interrupt handler")
+	}
+
 	self, err := os.FindProcess(os.Getpid())
 	if err != nil {
 		t.Fatalf("os.FindProcess() error = %v", err)

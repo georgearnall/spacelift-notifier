@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -75,15 +76,59 @@ func (c *Client) sdkClient() client.Client {
 	return c.sdk
 }
 
-// newSessionFromEnvironment loads a session from the environment exactly
-// as session.New itself does (see FromEnvironment), i.e. the *effective*
-// selection - all of a method's required variables present and complete,
-// not just one of them set. Indirected through a var so tests can
-// exercise ReloginSupported's env-vs-profile branching without either a
-// real environment-based session (some methods perform an eager network
-// token exchange) or a real profile file.
-var newSessionFromEnvironment = func() (session.Session, error) {
-	return session.FromEnvironment(context.Background(), client.GetHTTPClient())(os.LookupEnv)
+// envAuthMethods mirrors, in precedence order, which environment
+// variables each of session.FromEnvironment's auth methods requires (see
+// spacectl's tryAuthMethod) - without actually constructing a session
+// through it. Calling FromEnvironment directly would work too, but two of
+// its methods (API key, GitHub token) perform an eager, unbounded network
+// token exchange just to build a Session value, and its endpoint lookup
+// can print a deprecation warning straight to stdout - neither acceptable
+// from a capability check that runs synchronously in the watch loop
+// before the terminal has even been paused for relogin. The method names
+// themselves aren't exported by the session package, so they're just
+// documentation here, not a compiled reference to it.
+var envAuthMethods = []struct {
+	name string
+	vars []string // all required for this method to be "complete"
+}{
+	{"token", []string{session.EnvSpaceliftAPIToken}},
+	{"github", []string{session.EnvSpaceliftAPIKeyEndpoint, session.EnvSpaceliftAPIGitHubToken}},
+	{"apikey", []string{session.EnvSpaceliftAPIKeyEndpoint, session.EnvSpaceliftAPIKeyID, session.EnvSpaceliftAPIKeySecret}},
+}
+
+// envSessionActive reports whether session.New would select an
+// environment-based session over the profile file, mirroring
+// FromEnvironment's own precedence: a preferred method (if set) is
+// checked on its own without falling back to the others, exactly as
+// tryAuthMethod does; otherwise each method is checked in order and any
+// one being complete is enough. envSpaceliftAPIEndpoint, the deprecated
+// fallback for the endpoint variable, is deliberately not considered
+// here - detecting it is what triggers the SDK's stdout warning above.
+func envSessionActive() bool {
+	complete := func(method string) bool {
+		for _, m := range envAuthMethods {
+			if m.name != method {
+				continue
+			}
+			for _, v := range m.vars {
+				if val, ok := os.LookupEnv(v); !ok || val == "" {
+					return false
+				}
+			}
+			return true
+		}
+		return false
+	}
+
+	if preferred, ok := os.LookupEnv(session.EnvSpaceliftAPIPreferredMethod); ok {
+		return complete(strings.ToLower(strings.TrimSpace(preferred)))
+	}
+	for _, m := range envAuthMethods {
+		if complete(m.name) {
+			return true
+		}
+	}
+	return false
 }
 
 // ReloginSupported reports why running `spacectl profile login` (with no
@@ -100,7 +145,7 @@ func ReloginSupported() error {
 	// (not just some SPACELIFT_* variable incidentally set, but a method
 	// with everything it needs present), relogging in the profile
 	// wouldn't change what this tool actually authenticates with.
-	if sess, err := newSessionFromEnvironment(); err == nil && sess != nil {
+	if envSessionActive() {
 		return errors.New("session is authenticated via environment variables, not a spacectl profile - `spacectl profile login` can't change that; update the environment and restart instead")
 	}
 

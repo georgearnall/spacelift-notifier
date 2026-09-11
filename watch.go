@@ -435,6 +435,7 @@ var runSpacectlLogin = func() error {
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(interrupt)
+	afterSignalRegistered()
 
 	if err := cmd.Start(); err != nil {
 		return err
@@ -459,6 +460,15 @@ var runSpacectlLogin = func() error {
 var spacectlLoginCommand = func() *exec.Cmd {
 	return exec.Command("spacectl", "profile", "login")
 }
+
+// afterSignalRegistered is called the instant runSpacectlLogin's interrupt
+// handler is installed. It exists purely so a test can synchronize on
+// that registration instead of guessing with a sleep before delivering a
+// signal to itself - a race that could otherwise deliver the signal
+// before anything is listening for it, falling back to the process's
+// default disposition (i.e. terminating the test binary) rather than
+// exercising the child-kill path. No-op in production.
+var afterSignalRegistered = func() {}
 
 // runOpen launches the OS's "open a URL" command. Overridden in tests so
 // openURL's behavior can be verified without actually launching a
