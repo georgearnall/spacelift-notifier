@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -50,13 +51,18 @@ type pollResult struct {
 	reqTotal, reqWindow int
 }
 
-// isUnauthorizedErr reports whether err is the SDK's session-expired /
-// logged-out error. Both the GraphQL and raw-HTTP paths in spacectl's
-// client (determineClientError / client.Do) surface this as an error whose
-// message contains "unauthorized" and a hint to re-run `spacectl profile
-// login`.
+// isUnauthorizedErr reports whether err is specifically the SDK's
+// session-expired / logged-out error, as opposed to a permission error.
+// spacectl's client (determineClientError in client.go) uses the
+// "unauthorized" prefix for two different messages: a permission problem
+// on an otherwise-valid session ("unauthorized: You're logged in. Maybe
+// you don't have access...") and an actually-expired session
+// ("unauthorized: You can re-login using `spacectl profile login`", from
+// both the GraphQL and raw-HTTP paths). Only the latter is something
+// relogin can fix, so this matches the "re-login" hint specifically rather
+// than the shared "unauthorized" prefix.
 func isUnauthorizedErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "unauthorized")
+	return err != nil && strings.Contains(err.Error(), "re-login")
 }
 
 // fail prints an error and exits. Used for startup failures that leave
@@ -309,7 +315,7 @@ func runWatch(cfg config) {
 				}
 			case keyRelogin:
 				if last.authExpired {
-					if err := relogin(ctx, c.Reauth, restoreTerminal); err != nil {
+					if err := relogin(ctx, spaceclient.ReloginSupported, c.Reauth, restoreTerminal); err != nil {
 						last.reloginErr = err
 					} else {
 						last.reloginErr = nil
@@ -334,7 +340,17 @@ func runWatch(cfg config) {
 // would. reauth is a parameter (rather than calling the method directly)
 // so tests can exercise relogin's control flow without a real Spacelift
 // profile on disk.
-func relogin(ctx context.Context, reauth func(context.Context) error, restoreTerminal func()) error {
+func relogin(ctx context.Context, checkSupported func() error, reauth func(context.Context) error, restoreTerminal func()) error {
+	// Checked before touching the terminal at all: spacectl's no-argument
+	// `profile login` only works for a profile whose stored credentials
+	// are already a browser-issued API Token, and does nothing to help an
+	// environment-variable-authenticated session (see
+	// spaceclient.ReloginSupported) - so there's no point pausing the TUI
+	// for a command that's guaranteed to fail.
+	if err := checkSupported(); err != nil {
+		return err
+	}
+
 	fmt.Print(ansiAltScreenOff)
 	restoreTerminal()
 	defer func() {
@@ -355,13 +371,53 @@ func relogin(ctx context.Context, reauth func(context.Context) error, restoreTer
 // Stdin is deliberately left unset: the login flow needs no keyboard
 // input, and wiring up stdin here would race with the key-reader goroutine
 // that's permanently blocked reading os.Stdin (see readKeys' doc comment).
+//
+// The browser-callback wait can take up to spacectl's own 2-minute
+// timeout, during which runWatch's select loop is blocked inside this
+// call and can't act on a queued Ctrl-C/SIGTERM itself. To stay
+// responsive, this installs its own signal watch for the duration of the
+// subprocess and kills it on an interrupt rather than leaving the tool
+// (and the orphaned subprocess) stuck until spacectl's own timeout
+// elapses. signal.Notify supports multiple simultaneous listeners for the
+// same signal, so this doesn't steal the delivery runWatch's own signal
+// channel is waiting on - that channel still receives its own copy and
+// fires normally once this call returns.
+//
 // Overridden in tests so relogin's control flow can be exercised without
 // actually shelling out.
 var runSpacectlLogin = func() error {
-	cmd := exec.Command("spacectl", "profile", "login")
+	cmd := spacectlLoginCommand()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+
+	// Registered before Start so there's no window in which an interrupt
+	// arriving right after the process starts could be missed.
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(interrupt)
+
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-interrupt:
+		_ = cmd.Process.Kill()
+		<-done // reap the process so it doesn't linger
+		return errors.New("interrupted")
+	}
+}
+
+// spacectlLoginCommand builds the command runSpacectlLogin runs. Indirected
+// through a var so tests can substitute a short-lived stand-in process
+// instead of actually shelling out to spacectl.
+var spacectlLoginCommand = func() *exec.Cmd {
+	return exec.Command("spacectl", "profile", "login")
 }
 
 // runOpen launches the OS's "open a URL" command. Overridden in tests so

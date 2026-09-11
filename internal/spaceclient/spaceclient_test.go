@@ -206,3 +206,80 @@ func TestClient_Reauth_PropagatesSessionError(t *testing.T) {
 		t.Errorf("Reauth() error = %v, want it to wrap %v", err, wantErr)
 	}
 }
+
+// withIsolatedProfileDir points spacectl's profile manager at a fresh temp
+// directory for the duration of the test, so it never touches the real
+// ~/.spacelift/config.json.
+func withIsolatedProfileDir(t *testing.T) *session.ProfileManager {
+	t.Helper()
+	t.Setenv(session.EnvSpaceliftConfigDirectory, t.TempDir())
+	manager, err := session.UserProfileManager()
+	if err != nil {
+		t.Fatalf("session.UserProfileManager() error = %v", err)
+	}
+	return manager
+}
+
+func TestReloginSupported_EnvCredentialsRejected(t *testing.T) {
+	for _, envVar := range []string{
+		session.EnvSpaceliftAPIToken,
+		session.EnvSpaceliftAPIKeyID,
+		session.EnvSpaceliftAPIGitHubToken,
+	} {
+		t.Run(envVar, func(t *testing.T) {
+			t.Setenv(envVar, "some-value")
+			if err := ReloginSupported(); err == nil {
+				t.Errorf("ReloginSupported() = nil, want an error when %s is set", envVar)
+			}
+		})
+	}
+}
+
+func TestReloginSupported_NoProfileSelected(t *testing.T) {
+	withIsolatedProfileDir(t)
+
+	if err := ReloginSupported(); err == nil {
+		t.Error("ReloginSupported() = nil, want an error when no profile is selected")
+	}
+}
+
+func TestReloginSupported_NonAPITokenProfileRejected(t *testing.T) {
+	manager := withIsolatedProfileDir(t)
+	profile := &session.Profile{
+		Alias: "work",
+		Credentials: &session.StoredCredentials{
+			Type:      session.CredentialsTypeAPIKey,
+			Endpoint:  "https://example.app.spacelift.io",
+			KeyID:     "key-id",
+			KeySecret: "key-secret",
+		},
+	}
+	if err := manager.Create(profile); err != nil {
+		t.Fatalf("manager.Create() error = %v", err)
+	}
+	if err := manager.Select(profile.Alias); err != nil {
+		t.Fatalf("manager.Select() error = %v", err)
+	}
+
+	if err := ReloginSupported(); err == nil {
+		t.Error("ReloginSupported() = nil, want an error for a non-API-Token profile")
+	}
+}
+
+func TestReloginSupported_APITokenProfileAccepted(t *testing.T) {
+	manager := withIsolatedProfileDir(t)
+	profile := &session.Profile{
+		Alias:       "work",
+		Credentials: &session.StoredCredentials{Type: session.CredentialsTypeAPIToken, Endpoint: "https://example.app.spacelift.io"},
+	}
+	if err := manager.Create(profile); err != nil {
+		t.Fatalf("manager.Create() error = %v", err)
+	}
+	if err := manager.Select(profile.Alias); err != nil {
+		t.Fatalf("manager.Select() error = %v", err)
+	}
+
+	if err := ReloginSupported(); err != nil {
+		t.Errorf("ReloginSupported() error = %v, want nil for an API Token profile", err)
+	}
+}

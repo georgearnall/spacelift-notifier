@@ -8,7 +8,9 @@ package spaceclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -65,6 +67,53 @@ func (c *Client) Reauth(ctx context.Context) error {
 	return nil
 }
 
+// sdkClient returns the current SDK client under lock, so a Reauth call
+// replacing it can never race with a concurrent read of the field.
+func (c *Client) sdkClient() client.Client {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sdk
+}
+
+// reloginEnvVars are the environment variables session.New checks before
+// ever consulting the spacectl profile file (see session.FromEnvironment).
+// If any is set, that's what this tool is actually authenticating with,
+// regardless of what `spacectl profile login` does to the profile file.
+var reloginEnvVars = []string{
+	session.EnvSpaceliftAPIToken,
+	session.EnvSpaceliftAPIKeyID,
+	session.EnvSpaceliftAPIGitHubToken,
+}
+
+// ReloginSupported reports why running `spacectl profile login` (with no
+// arguments) would fail to recover the current session, or nil if it
+// should work. spacectl's own `profile login` command only supports that
+// no-argument form for a profile whose stored credentials are already a
+// browser-issued API Token (see spacectl's getAliasWithAPITokenProfile) -
+// for any other credential source it's guaranteed to fail, so this is
+// checked up front rather than surfacing spacectl's own generic profile
+// error after already pausing the terminal to run it.
+func ReloginSupported() error {
+	for _, envVar := range reloginEnvVars {
+		if _, ok := os.LookupEnv(envVar); ok {
+			return fmt.Errorf("session is authenticated via the %s environment variable, not a spacectl profile - `spacectl profile login` can't change that; update the environment and restart instead", envVar)
+		}
+	}
+
+	manager, err := session.UserProfileManager()
+	if err != nil {
+		return fmt.Errorf("checking spacectl profile: %w", err)
+	}
+	profile := manager.Current()
+	if profile == nil {
+		return errors.New("no spacectl profile is currently selected; run `spacectl profile login <alias>` manually")
+	}
+	if profile.Credentials.Type != session.CredentialsTypeAPIToken {
+		return fmt.Errorf("current spacectl profile %q uses %s credentials, not a browser login; `spacectl profile login` (with no arguments) only supports API Token profiles - run `spacectl profile login %s` manually instead", profile.Alias, profile.Credentials.Type, profile.Alias)
+	}
+	return nil
+}
+
 // NewFromSDK builds a Client around an already-constructed SDK client.
 // Used by tests to point at an httptest.Server via a fake session, and
 // available for callers that need non-default session construction.
@@ -76,7 +125,7 @@ func NewFromSDK(sdk client.Client) *Client {
 // request budget. vars may be nil.
 func (c *Client) Query(ctx context.Context, out any, vars map[string]any) error {
 	c.recordRequest()
-	return c.sdk.Query(ctx, out, vars)
+	return c.sdkClient().Query(ctx, out, vars)
 }
 
 func (c *Client) recordRequest() {
@@ -103,13 +152,13 @@ func (c *Client) Stats() (total, windowCount int) {
 // StackURL returns a link directly to a stack's page in the Spacelift web
 // UI, confirmed against spacectl's own "stack open" command.
 func (c *Client) StackURL(stackID string) string {
-	return c.sdk.URL("/stack/%s", stackID)
+	return c.sdkClient().URL("/stack/%s", stackID)
 }
 
 // RunURL returns a link directly to a specific run's page, confirmed
 // against spacectl's own "stack confirm" command construction.
 func (c *Client) RunURL(stackID, runID string) string {
-	return c.sdk.URL("/stack/%s/run/%s", stackID, runID)
+	return c.sdkClient().URL("/stack/%s/run/%s", stackID, runID)
 }
 
 // Viewer identifies who the tool is authenticated as.

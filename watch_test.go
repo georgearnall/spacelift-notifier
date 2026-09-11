@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -212,6 +214,8 @@ func TestIsUnauthorizedErr(t *testing.T) {
 	}{
 		{"nil error", nil, false},
 		{"unauthorized error", errors.New("unauthorized: You can re-login using `spacectl profile login`"), true},
+		{"lowercase unauthorized error", errors.New("unauthorized: you can re-login using `spacectl profile login`"), true},
+		{"permission error is not relogin-able", errors.New("unauthorized: You're logged in. Maybe you don't have access to the resource?"), false},
 		{"unrelated error", errors.New("boom"), false},
 	}
 	for _, c := range cases {
@@ -253,11 +257,13 @@ func withFakeSpacectlLogin(t *testing.T, err error) {
 	runSpacectlLogin = func() error { return err }
 }
 
+func alwaysSupported() error { return nil }
+
 func TestRelogin_Success(t *testing.T) {
 	withFakeSpacectlLogin(t, nil)
 
 	var restored, reauthed bool
-	err := relogin(context.Background(), func(context.Context) error {
+	err := relogin(context.Background(), alwaysSupported, func(context.Context) error {
 		reauthed = true
 		return nil
 	}, func() { restored = true })
@@ -273,12 +279,39 @@ func TestRelogin_Success(t *testing.T) {
 	}
 }
 
+func TestRelogin_NotSupportedSkipsLoginAndReauth(t *testing.T) {
+	wantErr := errors.New("session is authenticated via SPACELIFT_API_TOKEN")
+	loginRan, restored, reauthed := false, false, false
+	withFakeSpacectlLogin(t, nil)
+	orig := runSpacectlLogin
+	t.Cleanup(func() { runSpacectlLogin = orig })
+	runSpacectlLogin = func() error { loginRan = true; return nil }
+
+	err := relogin(context.Background(), func() error { return wantErr }, func(context.Context) error {
+		reauthed = true
+		return nil
+	}, func() { restored = true })
+
+	if !errors.Is(err, wantErr) {
+		t.Errorf("relogin() error = %v, want %v", err, wantErr)
+	}
+	if loginRan {
+		t.Error("relogin() shelled out to spacectl despite checkSupported rejecting it")
+	}
+	if restored {
+		t.Error("relogin() touched the terminal despite checkSupported rejecting it")
+	}
+	if reauthed {
+		t.Error("relogin() called reauth despite checkSupported rejecting it")
+	}
+}
+
 func TestRelogin_LoginCommandFails(t *testing.T) {
 	wantErr := errors.New("spacectl not found")
 	withFakeSpacectlLogin(t, wantErr)
 
 	reauthed := false
-	err := relogin(context.Background(), func(context.Context) error {
+	err := relogin(context.Background(), alwaysSupported, func(context.Context) error {
 		reauthed = true
 		return nil
 	}, func() {})
@@ -298,12 +331,43 @@ func TestRelogin_ReauthFails(t *testing.T) {
 	withFakeSpacectlLogin(t, nil)
 
 	wantErr := errors.New("loading spacelift session: boom")
-	err := relogin(context.Background(), func(context.Context) error {
+	err := relogin(context.Background(), alwaysSupported, func(context.Context) error {
 		return wantErr
 	}, func() {})
 
 	if !errors.Is(err, wantErr) {
 		t.Errorf("relogin() error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestRunSpacectlLogin_KilledOnInterrupt(t *testing.T) {
+	if _, err := exec.LookPath("sleep"); err != nil {
+		t.Skip("sleep not available")
+	}
+	orig := spacectlLoginCommand
+	t.Cleanup(func() { spacectlLoginCommand = orig })
+	spacectlLoginCommand = func() *exec.Cmd { return exec.Command("sleep", "30") }
+
+	done := make(chan error, 1)
+	go func() { done <- runSpacectlLogin() }()
+
+	// Give the subprocess a moment to actually start before signalling.
+	time.Sleep(50 * time.Millisecond)
+	self, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatalf("os.FindProcess() error = %v", err)
+	}
+	if err := self.Signal(os.Interrupt); err != nil {
+		t.Fatalf("signalling self: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("runSpacectlLogin() error = nil, want an interrupted error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runSpacectlLogin() did not return after an interrupt; subprocess likely left running")
 	}
 }
 
