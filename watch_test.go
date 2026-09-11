@@ -204,6 +204,45 @@ func TestDoPoll_PropagatesQueryError(t *testing.T) {
 	}
 }
 
+func TestIsUnauthorizedErr(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{"unauthorized error", errors.New("unauthorized: You can re-login using `spacectl profile login`"), true},
+		{"unrelated error", errors.New("boom"), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isUnauthorizedErr(c.err); got != c.want {
+				t.Errorf("isUnauthorizedErr(%v) = %v, want %v", c.err, got, c.want)
+			}
+		})
+	}
+}
+
+func TestDoPoll_SetsAuthExpiredOnUnauthorizedError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"errors":[{"message":"unauthorized"}]}`)
+	}))
+	defer srv.Close()
+
+	sdk := client.New(srv.Client(), fakeSession{endpoint: srv.URL})
+	c := spaceclient.NewFromSDK(sdk)
+	st := state.New()
+
+	res := doPoll(context.Background(), c, st, config{})
+	if res.err == nil {
+		t.Fatal("doPoll() error = nil, want an error")
+	}
+	if !res.authExpired {
+		t.Errorf("doPoll() authExpired = false, want true for error %q", res.err)
+	}
+}
+
 func TestCRLF(t *testing.T) {
 	in := "no pending confirmations for your team\npolled 12:00:00 · 0 pending\n"
 	want := "no pending confirmations for your team\r\npolled 12:00:00 · 0 pending\r\n"

@@ -41,8 +41,18 @@ type pollResult struct {
 	items               []pending.PendingConfirmation
 	newlyPendingIDs     []string
 	err                 error
+	authExpired         bool
 	polledAt            time.Time
 	reqTotal, reqWindow int
+}
+
+// isUnauthorizedErr reports whether err is the SDK's session-expired /
+// logged-out error. Both the GraphQL and raw-HTTP paths in spacectl's
+// client (determineClientError / client.Do) surface this as an error whose
+// message contains "unauthorized" and a hint to re-run `spacectl profile
+// login`.
+func isUnauthorizedErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "unauthorized")
 }
 
 // fail prints an error and exits. Used for startup failures that leave
@@ -58,7 +68,7 @@ func fail(format string, args ...any) {
 func doPoll(ctx context.Context, c *spaceclient.Client, st *state.State, cfg config) pollResult {
 	now := time.Now()
 	items, err := pending.Poll(ctx, c, labels.Config{Labels: cfg.teamLabels.values})
-	res := pollResult{polledAt: now, err: err}
+	res := pollResult{polledAt: now, err: err, authExpired: isUnauthorizedErr(err)}
 	if err != nil {
 		res.reqTotal, res.reqWindow = c.Stats()
 		return res
@@ -221,11 +231,18 @@ func runWatch(cfg config) {
 	redraw := func() {
 		var b strings.Builder
 		b.WriteString(ansiClearScreen)
-		if last.err != nil {
+		switch {
+		case last.authExpired:
+			b.WriteString(ui.Style("spacelift-notifier: session expired - press l to relogin\n\n", ui.BoldRed, colorEnabled))
+		case last.err != nil:
 			b.WriteString(ui.Style(fmt.Sprintf("spacelift-notifier: poll error (retrying): %v\n\n", last.err), ui.BoldRed, colorEnabled))
 		}
 		b.WriteString(ui.RenderTable(renderRows(last.items, selected), linksSupported, colorEnabled))
-		b.WriteString(ui.Style(footer(last, cfg, " · q to quit"), ui.Dim, colorEnabled))
+		quitHint := " · q to quit"
+		if last.authExpired {
+			quitHint = " · l to relogin" + quitHint
+		}
+		b.WriteString(ui.Style(footer(last, cfg, quitHint), ui.Dim, colorEnabled))
 		// readKeys puts the tty into raw mode, which on Unix also clears
 		// the OPOST output flag for the whole tty (stdin/stdout share
 		// one underlying device) - without it, a bare "\n" no longer
@@ -284,6 +301,16 @@ func runWatch(cfg config) {
 				if selected >= 0 && selected < len(last.items) {
 					openURL(last.items[selected].RunURL)
 				}
+			case keyRelogin:
+				if last.authExpired {
+					if newClient, err := relogin(ctx, restoreTerminal); err != nil {
+						last.err = err
+					} else {
+						c = newClient
+						timer.Reset(0) // poll again immediately with the fresh session
+					}
+					redraw()
+				}
 			}
 		case <-resized:
 			redraw()
@@ -291,6 +318,34 @@ func runWatch(cfg config) {
 			return // let the deferred restoreTerminal/ansiAltScreenOff run before exiting
 		}
 	}
+}
+
+// relogin pauses the TUI, runs `spacectl profile login` interactively so
+// the user can complete the browser-based re-auth flow, then rebuilds the
+// Spacelift client from the refreshed profile. The existing client can't
+// simply be reused afterward: it captured its SDK session once at
+// construction, and relogging in only rewrites ~/.spacelift/config.json -
+// it doesn't update that in-memory session.
+func relogin(ctx context.Context, restoreTerminal func()) (*spaceclient.Client, error) {
+	fmt.Print(ansiAltScreenOff)
+	restoreTerminal()
+	defer func() {
+		reenterRawMode()
+		fmt.Print(ansiAltScreenOn)
+	}()
+
+	fmt.Println("spacelift-notifier: running `spacectl profile login`...")
+	cmd := exec.Command("spacectl", "profile", "login")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	// Stdin is deliberately left unset: the login flow is browser-driven
+	// and needs no keyboard input, and wiring up stdin here would race
+	// with the key-reader goroutine that's permanently blocked reading
+	// os.Stdin (see readKeys' doc comment).
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("spacectl profile login: %w", err)
+	}
+	return spaceclient.New(ctx)
 }
 
 // runOpen launches the OS's "open a URL" command. Overridden in tests so
