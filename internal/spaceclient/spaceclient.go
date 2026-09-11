@@ -84,34 +84,50 @@ func (c *Client) sdkClient() client.Client {
 // token exchange just to build a Session value, and its endpoint lookup
 // can print a deprecation warning straight to stdout - neither acceptable
 // from a capability check that runs synchronously in the watch loop
-// before the terminal has even been paused for relogin. The method names
-// themselves aren't exported by the session package, so they're just
-// documentation here, not a compiled reference to it.
+// before the terminal has even been paused for relogin. Since this is a
+// from-scratch, os.LookupEnv-only re-derivation rather than a call into
+// the SDK's own getEndpoint, checking envSpaceliftAPIEndpoint (the
+// deprecated fallback for the endpoint variable) here carries none of that
+// print risk, so - unlike an earlier version of this check - it's
+// included for correctness: session.New's real Reauth call still honors
+// it. The method names themselves aren't exported by the session package,
+// so they're just documentation here, not a compiled reference to it.
 var envAuthMethods = []struct {
-	name string
-	vars []string // all required for this method to be "complete"
+	name          string
+	vars          []string // non-endpoint variables required for this method
+	needsEndpoint bool
 }{
-	{"token", []string{session.EnvSpaceliftAPIToken}},
-	{"github", []string{session.EnvSpaceliftAPIKeyEndpoint, session.EnvSpaceliftAPIGitHubToken}},
-	{"apikey", []string{session.EnvSpaceliftAPIKeyEndpoint, session.EnvSpaceliftAPIKeyID, session.EnvSpaceliftAPIKeySecret}},
+	{name: "token", vars: []string{session.EnvSpaceliftAPIToken}},
+	{name: "github", vars: []string{session.EnvSpaceliftAPIGitHubToken}, needsEndpoint: true},
+	{name: "apikey", vars: []string{session.EnvSpaceliftAPIKeyID, session.EnvSpaceliftAPIKeySecret}, needsEndpoint: true},
 }
 
 // envSessionActive reports whether session.New would select an
 // environment-based session over the profile file, mirroring
-// FromEnvironment's own precedence: a preferred method (if set) is
-// checked on its own without falling back to the others, exactly as
-// tryAuthMethod does; otherwise each method is checked in order and any
-// one being complete is enough. envSpaceliftAPIEndpoint, the deprecated
-// fallback for the endpoint variable, is deliberately not considered
-// here - detecting it is what triggers the SDK's stdout warning above.
+// FromEnvironment's own precedence: a preferred method, if set to a
+// non-empty value once trimmed (matching FromEnvironment's own check -
+// otherwise it isn't treated as a preference at all and every method
+// falls back to being tried in order, same as if unset), is checked on
+// its own without falling back to the others, exactly as tryAuthMethod
+// does; otherwise each method is checked in order and any one being
+// complete is enough.
 func envSessionActive() bool {
+	nonEmpty := func(name string) bool {
+		val, ok := os.LookupEnv(name)
+		return ok && val != ""
+	}
+	hasEndpoint := nonEmpty(session.EnvSpaceliftAPIKeyEndpoint) || nonEmpty(session.EnvSpaceliftAPIEndpoint)
+
 	complete := func(method string) bool {
 		for _, m := range envAuthMethods {
 			if m.name != method {
 				continue
 			}
+			if m.needsEndpoint && !hasEndpoint {
+				return false
+			}
 			for _, v := range m.vars {
-				if val, ok := os.LookupEnv(v); !ok || val == "" {
+				if !nonEmpty(v) {
 					return false
 				}
 			}
@@ -120,8 +136,8 @@ func envSessionActive() bool {
 		return false
 	}
 
-	if preferred, ok := os.LookupEnv(session.EnvSpaceliftAPIPreferredMethod); ok {
-		return complete(strings.ToLower(strings.TrimSpace(preferred)))
+	if preferred := strings.ToLower(strings.TrimSpace(os.Getenv(session.EnvSpaceliftAPIPreferredMethod))); preferred != "" {
+		return complete(preferred)
 	}
 	for _, m := range envAuthMethods {
 		if complete(m.name) {
@@ -156,6 +172,12 @@ func ReloginSupported() error {
 	profile := manager.Current()
 	if profile == nil {
 		return errors.New("no spacectl profile is currently selected; run `spacectl profile login <alias>` manually")
+	}
+	// Credentials is a JSON-optional pointer field, and loadConfiguration
+	// does no validation on read - a hand-edited or corrupted
+	// config.json could produce a profile with none set at all.
+	if profile.Credentials == nil {
+		return fmt.Errorf("current spacectl profile %q has no credentials on record; run `spacectl profile login %s` manually", profile.Alias, profile.Alias)
 	}
 	if profile.Credentials.Type != session.CredentialsTypeAPIToken {
 		return fmt.Errorf("current spacectl profile %q uses %s credentials, not a browser login; `spacectl profile login` (with no arguments) only supports API Token profiles - run `spacectl profile login %s` manually instead", profile.Alias, profile.Credentials.Type, profile.Alias)

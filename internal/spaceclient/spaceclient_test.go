@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -288,9 +290,27 @@ func TestEnvSessionActive(t *testing.T) {
 			},
 			true,
 		},
+		{
+			"preferred method set but blank falls back to the normal method loop",
+			map[string]string{
+				session.EnvSpaceliftAPIPreferredMethod: "   ", // trims to empty
+				session.EnvSpaceliftAPIToken:           "t",
+			},
+			true,
+		},
+		{
+			"complete api key method via the deprecated endpoint variable",
+			map[string]string{
+				session.EnvSpaceliftAPIEndpoint:  "https://example.app.spacelift.io", // legacy fallback, not *_KEY_ENDPOINT
+				session.EnvSpaceliftAPIKeyID:     "key-id",
+				session.EnvSpaceliftAPIKeySecret: "key-secret",
+			},
+			true,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			clearEnvAuthVars(t)
 			for k, v := range c.env {
 				t.Setenv(k, v)
 			}
@@ -302,6 +322,7 @@ func TestEnvSessionActive(t *testing.T) {
 }
 
 func TestReloginSupported_ActiveEnvSessionRejected(t *testing.T) {
+	clearEnvAuthVars(t)
 	t.Setenv(session.EnvSpaceliftAPIToken, "t")
 
 	if err := ReloginSupported(); err == nil {
@@ -315,6 +336,7 @@ func TestReloginSupported_ActiveEnvSessionRejected(t *testing.T) {
 // treated as an active environment session - it should fall through to
 // checking the profile instead of rejecting relogin outright.
 func TestReloginSupported_IncompleteEnvVarsFallsThroughToProfile(t *testing.T) {
+	clearEnvAuthVars(t)
 	t.Setenv(session.EnvSpaceliftAPIKeyID, "key-id")
 	manager := withIsolatedProfileDir(t)
 	profile := &session.Profile{
@@ -363,6 +385,29 @@ func TestReloginSupported_NonAPITokenProfileRejected(t *testing.T) {
 
 	if err := ReloginSupported(); err == nil {
 		t.Error("ReloginSupported() = nil, want an error for a non-API-Token profile")
+	}
+}
+
+// TestReloginSupported_ProfileWithNilCredentialsDoesNotPanic is a
+// regression test: ProfileManager.loadConfiguration performs no
+// validation on read, so a hand-edited or corrupted config.json can
+// produce a selected profile with a nil Credentials field.
+func TestReloginSupported_ProfileWithNilCredentialsDoesNotPanic(t *testing.T) {
+	clearEnvAuthVars(t)
+	dir := t.TempDir()
+	t.Setenv(session.EnvSpaceliftConfigDirectory, dir)
+
+	// Hand-written rather than built via ProfileManager.Create, which
+	// validates credentials and would reject this - the point is to
+	// reach ReloginSupported with a profile Create could never produce.
+	configJSON := `{"currentProfileAlias":"work","profiles":{"work":{"alias":"work"}}}`
+	if err := os.WriteFile(filepath.Join(dir, session.ConfigFileName), []byte(configJSON), 0o600); err != nil {
+		t.Fatalf("writing config.json: %v", err)
+	}
+
+	err := ReloginSupported() // must not panic
+	if err == nil {
+		t.Error("ReloginSupported() = nil, want an error for a profile with no credentials on record")
 	}
 }
 
