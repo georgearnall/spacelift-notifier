@@ -75,14 +75,15 @@ func (c *Client) sdkClient() client.Client {
 	return c.sdk
 }
 
-// reloginEnvVars are the environment variables session.New checks before
-// ever consulting the spacectl profile file (see session.FromEnvironment).
-// If any is set, that's what this tool is actually authenticating with,
-// regardless of what `spacectl profile login` does to the profile file.
-var reloginEnvVars = []string{
-	session.EnvSpaceliftAPIToken,
-	session.EnvSpaceliftAPIKeyID,
-	session.EnvSpaceliftAPIGitHubToken,
+// newSessionFromEnvironment loads a session from the environment exactly
+// as session.New itself does (see FromEnvironment), i.e. the *effective*
+// selection - all of a method's required variables present and complete,
+// not just one of them set. Indirected through a var so tests can
+// exercise ReloginSupported's env-vs-profile branching without either a
+// real environment-based session (some methods perform an eager network
+// token exchange) or a real profile file.
+var newSessionFromEnvironment = func() (session.Session, error) {
+	return session.FromEnvironment(context.Background(), client.GetHTTPClient())(os.LookupEnv)
 }
 
 // ReloginSupported reports why running `spacectl profile login` (with no
@@ -94,10 +95,13 @@ var reloginEnvVars = []string{
 // checked up front rather than surfacing spacectl's own generic profile
 // error after already pausing the terminal to run it.
 func ReloginSupported() error {
-	for _, envVar := range reloginEnvVars {
-		if _, ok := os.LookupEnv(envVar); ok {
-			return fmt.Errorf("session is authenticated via the %s environment variable, not a spacectl profile - `spacectl profile login` can't change that; update the environment and restart instead", envVar)
-		}
+	// session.New tries the environment before ever consulting the
+	// profile file - if an env-based session would actually be selected
+	// (not just some SPACELIFT_* variable incidentally set, but a method
+	// with everything it needs present), relogging in the profile
+	// wouldn't change what this tool actually authenticates with.
+	if sess, err := newSessionFromEnvironment(); err == nil && sess != nil {
+		return errors.New("session is authenticated via environment variables, not a spacectl profile - `spacectl profile login` can't change that; update the environment and restart instead")
 	}
 
 	manager, err := session.UserProfileManager()

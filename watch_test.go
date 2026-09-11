@@ -216,6 +216,7 @@ func TestIsUnauthorizedErr(t *testing.T) {
 		{"unauthorized error", errors.New("unauthorized: You can re-login using `spacectl profile login`"), true},
 		{"lowercase unauthorized error", errors.New("unauthorized: you can re-login using `spacectl profile login`"), true},
 		{"permission error is not relogin-able", errors.New("unauthorized: You're logged in. Maybe you don't have access to the resource?"), false},
+		{"bare capitalized unauthorized (raw 401 pass-through)", errors.New(`non-200 OK status code: 401 Unauthorized body: ""`), true},
 		{"unrelated error", errors.New("boom"), false},
 	}
 	for _, c := range cases {
@@ -247,6 +248,34 @@ func TestDoPoll_SetsAuthExpiredOnUnauthorizedError(t *testing.T) {
 	}
 }
 
+// TestDoPoll_SetsAuthExpiredOnBareUnauthorizedError covers a 401 whose body
+// happens not to contain the word "unauthorized" at all - representative
+// of a real Spacelift 401, as opposed to the previous test's mock body,
+// which spells it out by coincidence. In this case the underlying
+// spacelift-io/graphql client's own error text ("non-200 OK status code:
+// 401 Unauthorized ...") is all there is to detect: capital-U
+// "Unauthorized", not the lowercase text the SDK's own determineClientError
+// looks for, so this exercises the fallback path where that upstream
+// check never fires and the raw message passes straight through.
+func TestDoPoll_SetsAuthExpiredOnBareUnauthorizedError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized) // empty body - no lowercase "unauthorized" anywhere
+	}))
+	defer srv.Close()
+
+	sdk := client.New(srv.Client(), fakeSession{endpoint: srv.URL})
+	c := spaceclient.NewFromSDK(sdk)
+	st := state.New()
+
+	res := doPoll(context.Background(), c, st, config{})
+	if res.err == nil {
+		t.Fatal("doPoll() error = nil, want an error")
+	}
+	if !res.authExpired {
+		t.Errorf("doPoll() authExpired = false, want true for error %q", res.err)
+	}
+}
+
 // withFakeSpacectlLogin substitutes runSpacectlLogin for the duration of
 // the test, so relogin's control flow can be exercised without actually
 // shelling out to the spacectl binary.
@@ -258,6 +287,65 @@ func withFakeSpacectlLogin(t *testing.T, err error) {
 }
 
 func alwaysSupported() error { return nil }
+
+func TestApplyReloginKey_NotAuthExpiredIsNoOp(t *testing.T) {
+	called := false
+	last := pollResult{authExpired: false, err: errors.New("some other poll error")}
+
+	result, resetTimer, handled := applyReloginKey(last, func() error { called = true; return nil })
+
+	if called {
+		t.Error("applyReloginKey() called relogin despite authExpired being false")
+	}
+	if handled {
+		t.Error("applyReloginKey() handled = true, want false when authExpired is false")
+	}
+	if resetTimer {
+		t.Error("applyReloginKey() resetTimer = true, want false when authExpired is false")
+	}
+	if !errors.Is(result.err, last.err) || result.authExpired != last.authExpired || result.reloginErr != last.reloginErr {
+		t.Errorf("applyReloginKey() result = %+v, want the input unchanged: %+v", result, last)
+	}
+}
+
+func TestApplyReloginKey_SuccessClearsReloginErrAndResetsTimer(t *testing.T) {
+	last := pollResult{authExpired: true, reloginErr: errors.New("stale error from a previous attempt")}
+
+	result, resetTimer, handled := applyReloginKey(last, func() error { return nil })
+
+	if !handled {
+		t.Error("applyReloginKey() handled = false, want true when authExpired is true")
+	}
+	if !resetTimer {
+		t.Error("applyReloginKey() resetTimer = false, want true on a successful relogin")
+	}
+	if result.reloginErr != nil {
+		t.Errorf("applyReloginKey() reloginErr = %v, want nil after a successful relogin", result.reloginErr)
+	}
+	if !result.authExpired {
+		t.Error("applyReloginKey() cleared authExpired; it should only be cleared by the next real poll")
+	}
+}
+
+func TestApplyReloginKey_FailureSetsReloginErrWithoutResettingTimer(t *testing.T) {
+	last := pollResult{authExpired: true}
+	wantErr := errors.New("spacectl not found")
+
+	result, resetTimer, handled := applyReloginKey(last, func() error { return wantErr })
+
+	if !handled {
+		t.Error("applyReloginKey() handled = false, want true when authExpired is true")
+	}
+	if resetTimer {
+		t.Error("applyReloginKey() resetTimer = true, want false when relogin fails")
+	}
+	if !errors.Is(result.reloginErr, wantErr) {
+		t.Errorf("applyReloginKey() reloginErr = %v, want %v", result.reloginErr, wantErr)
+	}
+	if !result.authExpired {
+		t.Error("applyReloginKey() authExpired = false, want it to stay true so the user can retry with l")
+	}
+}
 
 func TestRelogin_Success(t *testing.T) {
 	withFakeSpacectlLogin(t, nil)

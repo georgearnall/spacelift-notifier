@@ -220,22 +220,53 @@ func withIsolatedProfileDir(t *testing.T) *session.ProfileManager {
 	return manager
 }
 
-func TestReloginSupported_EnvCredentialsRejected(t *testing.T) {
-	for _, envVar := range []string{
-		session.EnvSpaceliftAPIToken,
-		session.EnvSpaceliftAPIKeyID,
-		session.EnvSpaceliftAPIGitHubToken,
-	} {
-		t.Run(envVar, func(t *testing.T) {
-			t.Setenv(envVar, "some-value")
-			if err := ReloginSupported(); err == nil {
-				t.Errorf("ReloginSupported() = nil, want an error when %s is set", envVar)
-			}
-		})
+// withFakeEnvSession substitutes newSessionFromEnvironment for the
+// duration of the test, so ReloginSupported's env-vs-profile branching can
+// be exercised without a real environment-based session - some of the
+// SDK's own env auth methods perform an eager network token exchange just
+// to construct one.
+func withFakeEnvSession(t *testing.T, sess session.Session, err error) {
+	t.Helper()
+	orig := newSessionFromEnvironment
+	t.Cleanup(func() { newSessionFromEnvironment = orig })
+	newSessionFromEnvironment = func() (session.Session, error) { return sess, err }
+}
+
+func TestReloginSupported_ActiveEnvSessionRejected(t *testing.T) {
+	withFakeEnvSession(t, fakeSession{endpoint: "https://example.app.spacelift.io"}, nil)
+
+	if err := ReloginSupported(); err == nil {
+		t.Error("ReloginSupported() = nil, want an error when an environment-based session is active")
+	}
+}
+
+// TestReloginSupported_IncompleteEnvVarsFallsThroughToProfile is a
+// regression test: a single SPACELIFT_* variable being set (e.g. only
+// SPACELIFT_API_KEY_ID, without its required secret/endpoint) must not be
+// treated as an active environment session, exactly as session.New's own
+// FromEnvironment wouldn't select it either - it should fall through to
+// checking the profile instead of rejecting relogin outright.
+func TestReloginSupported_IncompleteEnvVarsFallsThroughToProfile(t *testing.T) {
+	withFakeEnvSession(t, nil, errors.New("SPACELIFT_API_KEY_SECRET missing from the environment"))
+	manager := withIsolatedProfileDir(t)
+	profile := &session.Profile{
+		Alias:       "work",
+		Credentials: &session.StoredCredentials{Type: session.CredentialsTypeAPIToken, Endpoint: "https://example.app.spacelift.io"},
+	}
+	if err := manager.Create(profile); err != nil {
+		t.Fatalf("manager.Create() error = %v", err)
+	}
+	if err := manager.Select(profile.Alias); err != nil {
+		t.Fatalf("manager.Select() error = %v", err)
+	}
+
+	if err := ReloginSupported(); err != nil {
+		t.Errorf("ReloginSupported() error = %v, want nil - an incomplete env var set shouldn't block relogin", err)
 	}
 }
 
 func TestReloginSupported_NoProfileSelected(t *testing.T) {
+	withFakeEnvSession(t, nil, errors.New("no env credentials"))
 	withIsolatedProfileDir(t)
 
 	if err := ReloginSupported(); err == nil {
@@ -244,6 +275,7 @@ func TestReloginSupported_NoProfileSelected(t *testing.T) {
 }
 
 func TestReloginSupported_NonAPITokenProfileRejected(t *testing.T) {
+	withFakeEnvSession(t, nil, errors.New("no env credentials"))
 	manager := withIsolatedProfileDir(t)
 	profile := &session.Profile{
 		Alias: "work",
@@ -267,6 +299,7 @@ func TestReloginSupported_NonAPITokenProfileRejected(t *testing.T) {
 }
 
 func TestReloginSupported_APITokenProfileAccepted(t *testing.T) {
+	withFakeEnvSession(t, nil, errors.New("no env credentials"))
 	manager := withIsolatedProfileDir(t)
 	profile := &session.Profile{
 		Alias:       "work",

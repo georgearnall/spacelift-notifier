@@ -51,18 +51,33 @@ type pollResult struct {
 	reqTotal, reqWindow int
 }
 
-// isUnauthorizedErr reports whether err is specifically the SDK's
-// session-expired / logged-out error, as opposed to a permission error.
-// spacectl's client (determineClientError in client.go) uses the
-// "unauthorized" prefix for two different messages: a permission problem
-// on an otherwise-valid session ("unauthorized: You're logged in. Maybe
-// you don't have access...") and an actually-expired session
-// ("unauthorized: You can re-login using `spacectl profile login`", from
-// both the GraphQL and raw-HTTP paths). Only the latter is something
-// relogin can fix, so this matches the "re-login" hint specifically rather
-// than the shared "unauthorized" prefix.
+// isUnauthorizedErr reports whether err is the SDK's session-expired /
+// logged-out error, as opposed to a permission error on an otherwise-valid
+// session.
+//
+// Matching is necessarily fuzzy: the vendored client returns plain
+// fmt.Errorf strings, not a typed/status-coded error, and the exact text
+// varies by path. determineClientError's GraphQL path only recognizes an
+// underlying error as auth-related at all via a *lowercase*
+// strings.Contains(err.Error(), "unauthorized") check - a raw 401 from the
+// spacelift-io/graphql client actually surfaces as e.g. "non-200 OK status
+// code: 401 Unauthorized ...", capital U, which fails that check and
+// passes the raw message straight through untouched. Once
+// determineClientError *does* recognize it, it produces one of two
+// messages: a permission problem on an otherwise-valid session
+// ("unauthorized: You're logged in. Maybe you don't have access..."), or
+// an actually-expired session ("unauthorized: You can re-login using
+// `spacectl profile login`" - client.Do's raw-HTTP path uses the same
+// wording, lowercase). Only the last of these is something relogin can
+// fix, so this matches "unauthorized" case-insensitively (to catch the
+// pass-through capital-U case too) while explicitly excluding the
+// permission-denied wording.
 func isUnauthorizedErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "re-login")
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unauthorized") && !strings.Contains(msg, "don't have access")
 }
 
 // fail prints an error and exits. Used for startup failures that leave
@@ -314,13 +329,14 @@ func runWatch(cfg config) {
 					openURL(last.items[selected].RunURL)
 				}
 			case keyRelogin:
-				if last.authExpired {
-					if err := relogin(ctx, spaceclient.ReloginSupported, c.Reauth, restoreTerminal); err != nil {
-						last.reloginErr = err
-					} else {
-						last.reloginErr = nil
-						timer.Reset(0) // poll again immediately with the fresh session
-					}
+				var resetTimer, handled bool
+				last, resetTimer, handled = applyReloginKey(last, func() error {
+					return relogin(ctx, spaceclient.ReloginSupported, c.Reauth, restoreTerminal)
+				})
+				if resetTimer {
+					timer.Reset(0) // poll again immediately with the fresh session
+				}
+				if handled {
 					redraw()
 				}
 			}
@@ -330,6 +346,30 @@ func runWatch(cfg config) {
 			return // let the deferred restoreTerminal/ansiAltScreenOff run before exiting
 		}
 	}
+}
+
+// applyReloginKey handles a keyRelogin press against the current poll
+// state, and is the extracted, directly-testable form of the state
+// transition the watch loop's select case applies inline (the loop itself
+// can't be unit tested: it closes over per-iteration locals like c, timer
+// and ctx). If the last poll didn't detect an expired session, this is a
+// no-op - handled is false, and result/resetTimer are the input
+// unchanged. Otherwise it calls relogin (a closure the caller builds
+// around the real relogin function, ctx, and the current client/terminal
+// state) and returns the updated pollResult - reloginErr set on failure
+// so the banner explains what went wrong while still offering a retry
+// (authExpired is left true either way), or cleared on success, alongside
+// whether the caller should trigger an immediate re-poll.
+func applyReloginKey(last pollResult, relogin func() error) (result pollResult, resetTimer, handled bool) {
+	if !last.authExpired {
+		return last, false, false
+	}
+	if err := relogin(); err != nil {
+		last.reloginErr = err
+		return last, false, true
+	}
+	last.reloginErr = nil
+	return last, true, true
 }
 
 // relogin pauses the TUI, runs `spacectl profile login` interactively so
