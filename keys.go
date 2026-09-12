@@ -15,6 +15,7 @@ const (
 	keyUp
 	keyDown
 	keyEnter
+	keyRelogin
 )
 
 // readKeys puts stdin into raw mode (if it's a terminal) and sends
@@ -67,12 +68,23 @@ func readKeys(done <-chan struct{}) (<-chan key, func()) {
 	return ch, restore
 }
 
+// reenterRawMode puts stdin back into raw mode after a caller has
+// temporarily left it (e.g. via the restore func returned by readKeys) to
+// run an interactive subprocess. Safe to call even if stdin isn't a
+// terminal; the error is ignored the same way readKeys ignores it when
+// first entering raw mode.
+func reenterRawMode() {
+	term.MakeRaw(int(os.Stdin.Fd()))
+}
+
 func decodeKey(b []byte) key {
 	switch {
 	case len(b) == 1 && (b[0] == 'q' || b[0] == 3): // 3 = Ctrl-C
 		return keyQuit
 	case len(b) == 1 && (b[0] == '\r' || b[0] == '\n'):
 		return keyEnter
+	case len(b) == 1 && b[0] == 'l':
+		return keyRelogin
 	case len(b) == 3 && b[0] == 0x1b && b[1] == '[' && b[2] == 'A':
 		return keyUp
 	case len(b) == 3 && b[0] == 0x1b && b[1] == '[' && b[2] == 'B':

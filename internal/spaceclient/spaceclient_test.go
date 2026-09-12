@@ -3,9 +3,12 @@ package spaceclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -149,5 +152,280 @@ func TestClient_Query_MarshalsVariables(t *testing.T) {
 	gotInput, ok := gotVars["input"].(map[string]any)
 	if !ok || gotInput["first"] != float64(50) {
 		t.Errorf("variables.input = %v, want {first: 50}", gotVars["input"])
+	}
+}
+
+// withFakeSession substitutes newSession for the duration of the test so
+// Reauth can be exercised against an httptest.Server instead of a real
+// Spacelift profile on disk.
+func withFakeSession(t *testing.T, sess session.Session, err error) {
+	t.Helper()
+	orig := newSession
+	t.Cleanup(func() { newSession = orig })
+	newSession = func(context.Context, *http.Client) (session.Session, error) { return sess, err }
+}
+
+func TestClient_Reauth_PreservesRequestCounters(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":{}}`)
+	})
+
+	var out struct{}
+	if err := c.Query(context.Background(), &out, nil); err != nil {
+		t.Fatal(err)
+	}
+	if total, window := c.Stats(); total != 1 || window != 1 {
+		t.Fatalf("Stats() before Reauth = (%d, %d), want (1, 1)", total, window)
+	}
+
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":{}}`)
+	}))
+	defer srv2.Close()
+	withFakeSession(t, fakeSession{endpoint: srv2.URL}, nil)
+
+	if err := c.Reauth(context.Background()); err != nil {
+		t.Fatalf("Reauth() error = %v", err)
+	}
+	if err := c.Query(context.Background(), &out, nil); err != nil {
+		t.Fatal(err)
+	}
+	if total, window := c.Stats(); total != 2 || window != 2 {
+		t.Errorf("Stats() after Reauth = (%d, %d), want (2, 2) - Reauth must preserve the request budget, not reset it", total, window)
+	}
+}
+
+func TestClient_Reauth_PropagatesSessionError(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {})
+	wantErr := errors.New("no current profile is set")
+	withFakeSession(t, nil, wantErr)
+
+	err := c.Reauth(context.Background())
+	if err == nil {
+		t.Fatal("Reauth() error = nil, want the session error to propagate")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("Reauth() error = %v, want it to wrap %v", err, wantErr)
+	}
+}
+
+// clearEnvAuthVars clears every environment variable envSessionActive
+// looks at, for the duration of the test - hermetically forcing "no
+// env-based session", regardless of what's actually set on the host
+// running the tests.
+func clearEnvAuthVars(t *testing.T) {
+	t.Helper()
+	for _, v := range []string{
+		session.EnvSpaceliftAPIToken,
+		session.EnvSpaceliftAPIKeyID,
+		session.EnvSpaceliftAPIKeySecret,
+		session.EnvSpaceliftAPIGitHubToken,
+		session.EnvSpaceliftAPIKeyEndpoint,
+		session.EnvSpaceliftAPIEndpoint,
+		session.EnvSpaceliftAPIPreferredMethod,
+	} {
+		t.Setenv(v, "")
+	}
+}
+
+// withIsolatedProfileDir points spacectl's profile manager at a fresh temp
+// directory for the duration of the test, so it never touches the real
+// ~/.spacelift/config.json.
+func withIsolatedProfileDir(t *testing.T) *session.ProfileManager {
+	t.Helper()
+	t.Setenv(session.EnvSpaceliftConfigDirectory, t.TempDir())
+	manager, err := session.UserProfileManager()
+	if err != nil {
+		t.Fatalf("session.UserProfileManager() error = %v", err)
+	}
+	return manager
+}
+
+func TestEnvSessionActive(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want bool
+	}{
+		{"nothing set", nil, false},
+		{
+			"single API key var is incomplete",
+			// The exact case reported: one var alone must not count as
+			// active, since session.New's own FromEnvironment wouldn't
+			// select it either (it needs the secret and endpoint too).
+			map[string]string{session.EnvSpaceliftAPIKeyID: "key-id"},
+			false,
+		},
+		{"complete token method", map[string]string{session.EnvSpaceliftAPIToken: "t"}, true},
+		{
+			"complete api key method",
+			map[string]string{
+				session.EnvSpaceliftAPIKeyEndpoint: "https://example.app.spacelift.io",
+				session.EnvSpaceliftAPIKeyID:       "key-id",
+				session.EnvSpaceliftAPIKeySecret:   "key-secret",
+			},
+			true,
+		},
+		{
+			"complete github method",
+			map[string]string{
+				session.EnvSpaceliftAPIKeyEndpoint: "https://example.app.spacelift.io",
+				session.EnvSpaceliftAPIGitHubToken: "gh-token",
+			},
+			true,
+		},
+		{
+			"preferred method set but incomplete does not fall back to another complete method",
+			map[string]string{
+				session.EnvSpaceliftAPIPreferredMethod: "apikey",
+				session.EnvSpaceliftAPIToken:           "t", // complete on its own, but not preferred
+			},
+			false,
+		},
+		{
+			"preferred method set and complete",
+			map[string]string{
+				session.EnvSpaceliftAPIPreferredMethod: "token",
+				session.EnvSpaceliftAPIToken:           "t",
+			},
+			true,
+		},
+		{
+			"preferred method set but blank falls back to the normal method loop",
+			map[string]string{
+				session.EnvSpaceliftAPIPreferredMethod: "   ", // trims to empty
+				session.EnvSpaceliftAPIToken:           "t",
+			},
+			true,
+		},
+		{
+			"complete api key method via the deprecated endpoint variable",
+			map[string]string{
+				session.EnvSpaceliftAPIEndpoint:  "https://example.app.spacelift.io", // legacy fallback, not *_KEY_ENDPOINT
+				session.EnvSpaceliftAPIKeyID:     "key-id",
+				session.EnvSpaceliftAPIKeySecret: "key-secret",
+			},
+			true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clearEnvAuthVars(t)
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+			if got := envSessionActive(); got != c.want {
+				t.Errorf("envSessionActive() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestReloginSupported_ActiveEnvSessionRejected(t *testing.T) {
+	clearEnvAuthVars(t)
+	t.Setenv(session.EnvSpaceliftAPIToken, "t")
+
+	if err := ReloginSupported(); err == nil {
+		t.Error("ReloginSupported() = nil, want an error when an environment-based session is active")
+	}
+}
+
+// TestReloginSupported_IncompleteEnvVarsFallsThroughToProfile is a
+// regression test: a single SPACELIFT_* variable being set (e.g. only
+// SPACELIFT_API_KEY_ID, without its required secret/endpoint) must not be
+// treated as an active environment session - it should fall through to
+// checking the profile instead of rejecting relogin outright.
+func TestReloginSupported_IncompleteEnvVarsFallsThroughToProfile(t *testing.T) {
+	clearEnvAuthVars(t)
+	t.Setenv(session.EnvSpaceliftAPIKeyID, "key-id")
+	manager := withIsolatedProfileDir(t)
+	profile := &session.Profile{
+		Alias:       "work",
+		Credentials: &session.StoredCredentials{Type: session.CredentialsTypeAPIToken, Endpoint: "https://example.app.spacelift.io"},
+	}
+	if err := manager.Create(profile); err != nil {
+		t.Fatalf("manager.Create() error = %v", err)
+	}
+	if err := manager.Select(profile.Alias); err != nil {
+		t.Fatalf("manager.Select() error = %v", err)
+	}
+
+	if err := ReloginSupported(); err != nil {
+		t.Errorf("ReloginSupported() error = %v, want nil - an incomplete env var set shouldn't block relogin", err)
+	}
+}
+
+func TestReloginSupported_NoProfileSelected(t *testing.T) {
+	clearEnvAuthVars(t)
+	withIsolatedProfileDir(t)
+
+	if err := ReloginSupported(); err == nil {
+		t.Error("ReloginSupported() = nil, want an error when no profile is selected")
+	}
+}
+
+func TestReloginSupported_NonAPITokenProfileRejected(t *testing.T) {
+	clearEnvAuthVars(t)
+	manager := withIsolatedProfileDir(t)
+	profile := &session.Profile{
+		Alias: "work",
+		Credentials: &session.StoredCredentials{
+			Type:      session.CredentialsTypeAPIKey,
+			Endpoint:  "https://example.app.spacelift.io",
+			KeyID:     "key-id",
+			KeySecret: "key-secret",
+		},
+	}
+	if err := manager.Create(profile); err != nil {
+		t.Fatalf("manager.Create() error = %v", err)
+	}
+	if err := manager.Select(profile.Alias); err != nil {
+		t.Fatalf("manager.Select() error = %v", err)
+	}
+
+	if err := ReloginSupported(); err == nil {
+		t.Error("ReloginSupported() = nil, want an error for a non-API-Token profile")
+	}
+}
+
+// TestReloginSupported_ProfileWithNilCredentialsDoesNotPanic is a
+// regression test: ProfileManager.loadConfiguration performs no
+// validation on read, so a hand-edited or corrupted config.json can
+// produce a selected profile with a nil Credentials field.
+func TestReloginSupported_ProfileWithNilCredentialsDoesNotPanic(t *testing.T) {
+	clearEnvAuthVars(t)
+	dir := t.TempDir()
+	t.Setenv(session.EnvSpaceliftConfigDirectory, dir)
+
+	// Hand-written rather than built via ProfileManager.Create, which
+	// validates credentials and would reject this - the point is to
+	// reach ReloginSupported with a profile Create could never produce.
+	configJSON := `{"currentProfileAlias":"work","profiles":{"work":{"alias":"work"}}}`
+	if err := os.WriteFile(filepath.Join(dir, session.ConfigFileName), []byte(configJSON), 0o600); err != nil {
+		t.Fatalf("writing config.json: %v", err)
+	}
+
+	err := ReloginSupported() // must not panic
+	if err == nil {
+		t.Error("ReloginSupported() = nil, want an error for a profile with no credentials on record")
+	}
+}
+
+func TestReloginSupported_APITokenProfileAccepted(t *testing.T) {
+	clearEnvAuthVars(t)
+	manager := withIsolatedProfileDir(t)
+	profile := &session.Profile{
+		Alias:       "work",
+		Credentials: &session.StoredCredentials{Type: session.CredentialsTypeAPIToken, Endpoint: "https://example.app.spacelift.io"},
+	}
+	if err := manager.Create(profile); err != nil {
+		t.Fatalf("manager.Create() error = %v", err)
+	}
+	if err := manager.Select(profile.Alias); err != nil {
+		t.Fatalf("manager.Select() error = %v", err)
+	}
+
+	if err := ReloginSupported(); err != nil {
+		t.Errorf("ReloginSupported() error = %v, want nil for an API Token profile", err)
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -36,13 +37,47 @@ const (
 	lowBudgetFloor = 5 * time.Minute
 )
 
-// pollResult holds the outcome of a single poll cycle.
+// pollResult holds the outcome of a single poll cycle, plus any outcome of
+// a relogin attempt the user triggered in response to it (reloginErr is
+// not itself part of polling - it's carried on the same struct because
+// runWatch keeps only a single "last" pollResult as its display state).
 type pollResult struct {
 	items               []pending.PendingConfirmation
 	newlyPendingIDs     []string
 	err                 error
+	authExpired         bool
+	reloginErr          error
 	polledAt            time.Time
 	reqTotal, reqWindow int
+}
+
+// isUnauthorizedErr reports whether err is the SDK's session-expired /
+// logged-out error, as opposed to a permission error on an otherwise-valid
+// session.
+//
+// Matching is necessarily fuzzy: the vendored client returns plain
+// fmt.Errorf strings, not a typed/status-coded error, and the exact text
+// varies by path. determineClientError's GraphQL path only recognizes an
+// underlying error as auth-related at all via a *lowercase*
+// strings.Contains(err.Error(), "unauthorized") check - a raw 401 from the
+// spacelift-io/graphql client actually surfaces as e.g. "non-200 OK status
+// code: 401 Unauthorized ...", capital U, which fails that check and
+// passes the raw message straight through untouched. Once
+// determineClientError *does* recognize it, it produces one of two
+// messages: a permission problem on an otherwise-valid session
+// ("unauthorized: You're logged in. Maybe you don't have access..."), or
+// an actually-expired session ("unauthorized: You can re-login using
+// `spacectl profile login`" - client.Do's raw-HTTP path uses the same
+// wording, lowercase). Only the last of these is something relogin can
+// fix, so this matches "unauthorized" case-insensitively (to catch the
+// pass-through capital-U case too) while explicitly excluding the
+// permission-denied wording.
+func isUnauthorizedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unauthorized") && !strings.Contains(msg, "don't have access")
 }
 
 // fail prints an error and exits. Used for startup failures that leave
@@ -58,7 +93,7 @@ func fail(format string, args ...any) {
 func doPoll(ctx context.Context, c *spaceclient.Client, st *state.State, cfg config) pollResult {
 	now := time.Now()
 	items, err := pending.Poll(ctx, c, labels.Config{Labels: cfg.teamLabels.values})
-	res := pollResult{polledAt: now, err: err}
+	res := pollResult{polledAt: now, err: err, authExpired: isUnauthorizedErr(err)}
 	if err != nil {
 		res.reqTotal, res.reqWindow = c.Stats()
 		return res
@@ -221,11 +256,20 @@ func runWatch(cfg config) {
 	redraw := func() {
 		var b strings.Builder
 		b.WriteString(ansiClearScreen)
-		if last.err != nil {
+		switch {
+		case last.reloginErr != nil:
+			b.WriteString(ui.Style(fmt.Sprintf("spacelift-notifier: relogin failed: %v (press l to retry)\n\n", last.reloginErr), ui.BoldRed, colorEnabled))
+		case last.authExpired:
+			b.WriteString(ui.Style("spacelift-notifier: session expired - press l to relogin\n\n", ui.BoldRed, colorEnabled))
+		case last.err != nil:
 			b.WriteString(ui.Style(fmt.Sprintf("spacelift-notifier: poll error (retrying): %v\n\n", last.err), ui.BoldRed, colorEnabled))
 		}
 		b.WriteString(ui.RenderTable(renderRows(last.items, selected), linksSupported, colorEnabled))
-		b.WriteString(ui.Style(footer(last, cfg, " · q to quit"), ui.Dim, colorEnabled))
+		quitHint := " · q to quit"
+		if last.authExpired {
+			quitHint = " · l to relogin" + quitHint
+		}
+		b.WriteString(ui.Style(footer(last, cfg, quitHint), ui.Dim, colorEnabled))
 		// readKeys puts the tty into raw mode, which on Unix also clears
 		// the OPOST output flag for the whole tty (stdin/stdout share
 		// one underlying device) - without it, a bare "\n" no longer
@@ -284,6 +328,17 @@ func runWatch(cfg config) {
 				if selected >= 0 && selected < len(last.items) {
 					openURL(last.items[selected].RunURL)
 				}
+			case keyRelogin:
+				var resetTimer, handled bool
+				last, resetTimer, handled = applyReloginKey(last, func() error {
+					return relogin(ctx, spaceclient.ReloginSupported, c.Reauth, restoreTerminal)
+				})
+				if resetTimer {
+					timer.Reset(0) // poll again immediately with the fresh session
+				}
+				if handled {
+					redraw()
+				}
 			}
 		case <-resized:
 			redraw()
@@ -292,6 +347,128 @@ func runWatch(cfg config) {
 		}
 	}
 }
+
+// applyReloginKey handles a keyRelogin press against the current poll
+// state, and is the extracted, directly-testable form of the state
+// transition the watch loop's select case applies inline (the loop itself
+// can't be unit tested: it closes over per-iteration locals like c, timer
+// and ctx). If the last poll didn't detect an expired session, this is a
+// no-op - handled is false, and result/resetTimer are the input
+// unchanged. Otherwise it calls relogin (a closure the caller builds
+// around the real relogin function, ctx, and the current client/terminal
+// state) and returns the updated pollResult - reloginErr set on failure
+// so the banner explains what went wrong while still offering a retry
+// (authExpired is left true either way), or cleared on success, alongside
+// whether the caller should trigger an immediate re-poll.
+func applyReloginKey(last pollResult, relogin func() error) (result pollResult, resetTimer, handled bool) {
+	if !last.authExpired {
+		return last, false, false
+	}
+	if err := relogin(); err != nil {
+		last.reloginErr = err
+		return last, false, true
+	}
+	last.reloginErr = nil
+	return last, true, true
+}
+
+// relogin pauses the TUI, runs `spacectl profile login` interactively so
+// the user can complete the browser-based re-auth flow, then calls reauth
+// (normally (*spaceclient.Client).Reauth) to rebuild the SDK session from
+// the now-refreshed profile in place - preserving that client's
+// request-count/budget accounting, unlike building a brand new Client
+// would. reauth is a parameter (rather than calling the method directly)
+// so tests can exercise relogin's control flow without a real Spacelift
+// profile on disk.
+func relogin(ctx context.Context, checkSupported func() error, reauth func(context.Context) error, restoreTerminal func()) error {
+	// Checked before touching the terminal at all: spacectl's no-argument
+	// `profile login` only works for a profile whose stored credentials
+	// are already a browser-issued API Token, and does nothing to help an
+	// environment-variable-authenticated session (see
+	// spaceclient.ReloginSupported) - so there's no point pausing the TUI
+	// for a command that's guaranteed to fail.
+	if err := checkSupported(); err != nil {
+		return err
+	}
+
+	fmt.Print(ansiAltScreenOff)
+	restoreTerminal()
+	defer func() {
+		reenterRawMode()
+		fmt.Print(ansiAltScreenOn)
+	}()
+
+	fmt.Println("spacelift-notifier: running `spacectl profile login`...")
+	if err := runSpacectlLogin(); err != nil {
+		return fmt.Errorf("spacectl profile login: %w", err)
+	}
+	return reauth(ctx)
+}
+
+// runSpacectlLogin shells out to the real spacectl binary to run its
+// interactive, browser-based re-auth flow (spacectl's login internals live
+// in an internal/ package of that module and can't be called directly).
+// Stdin is deliberately left unset: the login flow needs no keyboard
+// input, and wiring up stdin here would race with the key-reader goroutine
+// that's permanently blocked reading os.Stdin (see readKeys' doc comment).
+//
+// The browser-callback wait can take up to spacectl's own 2-minute
+// timeout, during which runWatch's select loop is blocked inside this
+// call and can't act on a queued Ctrl-C/SIGTERM itself. To stay
+// responsive, this installs its own signal watch for the duration of the
+// subprocess and kills it on an interrupt rather than leaving the tool
+// (and the orphaned subprocess) stuck until spacectl's own timeout
+// elapses. signal.Notify supports multiple simultaneous listeners for the
+// same signal, so this doesn't steal the delivery runWatch's own signal
+// channel is waiting on - that channel still receives its own copy and
+// fires normally once this call returns.
+//
+// Overridden in tests so relogin's control flow can be exercised without
+// actually shelling out.
+var runSpacectlLogin = func() error {
+	cmd := spacectlLoginCommand()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	// Registered before Start so there's no window in which an interrupt
+	// arriving right after the process starts could be missed.
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(interrupt)
+	afterSignalRegistered()
+
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-interrupt:
+		_ = cmd.Process.Kill()
+		<-done // reap the process so it doesn't linger
+		return errors.New("interrupted")
+	}
+}
+
+// spacectlLoginCommand builds the command runSpacectlLogin runs. Indirected
+// through a var so tests can substitute a short-lived stand-in process
+// instead of actually shelling out to spacectl.
+var spacectlLoginCommand = func() *exec.Cmd {
+	return exec.Command("spacectl", "profile", "login")
+}
+
+// afterSignalRegistered is called the instant runSpacectlLogin's interrupt
+// handler is installed. It exists purely so a test can synchronize on
+// that registration instead of guessing with a sleep before delivering a
+// signal to itself - a race that could otherwise deliver the signal
+// before anything is listening for it, falling back to the process's
+// default disposition (i.e. terminating the test binary) rather than
+// exercising the child-kill path. No-op in production.
+var afterSignalRegistered = func() {}
 
 // runOpen launches the OS's "open a URL" command. Overridden in tests so
 // openURL's behavior can be verified without actually launching a

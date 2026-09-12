@@ -12,6 +12,7 @@ func TestDecodeKey(t *testing.T) {
 		{"ctrl-c quits", []byte{3}, keyQuit},
 		{"carriage return is enter", []byte("\r"), keyEnter},
 		{"newline is enter", []byte("\n"), keyEnter},
+		{"l relogins", []byte("l"), keyRelogin},
 		{"up arrow", []byte{0x1b, '[', 'A'}, keyUp},
 		{"down arrow", []byte{0x1b, '[', 'B'}, keyDown},
 		{"unrecognized letter", []byte("x"), keyNone},

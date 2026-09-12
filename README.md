@@ -54,6 +54,10 @@ spacelift-notifier --team atlas
 - `↑` / `↓` - move the selection cursor
 - `Enter` - open the selected run in your browser (fallback for terminals
   that don't render the clickable OSC 8 links directly in the table)
+- `l` - relogin via `spacectl profile login` (only offered once a poll
+  detects your session has expired; only works for a browser-login profile
+  - not environment-variable credentials or an API key/GitHub token
+  profile, which `spacectl profile login` can't refresh non-interactively)
 - `q` / `Ctrl-C` - quit
 
 ## Authentication
