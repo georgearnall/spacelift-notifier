@@ -6,7 +6,9 @@ package pending
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/georgearnall/spacelift-notifier/internal/labels"
 )
@@ -142,10 +144,10 @@ func Poll(ctx context.Context, c queryer, cfg labels.Config) ([]PendingConfirmat
 			results = append(results, PendingConfirmation{
 				RunID:        run.ID,
 				StackID:      stack.ID,
-				StackName:    stack.Name,
-				SpaceName:    stack.SpaceDetails.Name,
-				Title:        run.Title,
-				Branch:       run.Branch,
+				StackName:    sanitize(stack.Name),
+				SpaceName:    sanitize(stack.SpaceDetails.Name),
+				Title:        sanitize(run.Title),
+				Branch:       sanitize(run.Branch),
 				CreatedAt:    time.Unix(run.CreatedAt, 0),
 				UpdatedAt:    time.Unix(run.UpdatedAt, 0),
 				MatchedLabel: matchedOn,
@@ -161,4 +163,19 @@ func Poll(ctx context.Context, c queryer, cfg labels.Config) ([]PendingConfirmat
 	}
 
 	return results, nil
+}
+
+// sanitize replaces control characters and bidi formatting characters
+// with spaces. Run titles are commit messages, so anyone who can push
+// controls them; left as-is, an embedded newline breaks the table and an
+// escape sequence (OSC 52 clipboard write, OSC 8 link spoofing, or an
+// early terminator inside the OSC 9 notification) would be interpreted
+// by the user's terminal.
+func sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) {
+			return ' '
+		}
+		return r
+	}, s)
 }

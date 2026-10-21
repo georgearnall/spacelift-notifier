@@ -185,3 +185,27 @@ func TestPoll_RealQueryShapeAgainstHTTPServer(t *testing.T) {
 		t.Errorf("predicate field = %v, want \"state\"", predicate["field"])
 	}
 }
+
+func TestPoll_SanitizesUntrustedText(t *testing.T) {
+	cfg := labels.Config{Labels: []string{"team"}}
+	e := edge("r1", true, []string{"team"})
+	e.Node.Run.Title = "fix\nbug \x1b]52;c;ZXZpbA==\x07 ‮evil"
+	e.Node.Stack.Name = "stack\x1b[31m"
+	var page searchRunsQuery
+	page.SearchRuns.Edges = []runEdge{e}
+
+	got, err := Poll(context.Background(), &fakeClient{responses: []searchRunsQuery{page}}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{got[0].Title, got[0].StackName} {
+		for _, r := range s {
+			if r < 0x20 || r == 0x7f || r == '‮' {
+				t.Errorf("Poll() left control character %U in %q", r, s)
+			}
+		}
+	}
+	if got[0].Title != "fix bug  ]52;c;ZXZpbA==   evil" {
+		t.Errorf("Title = %q", got[0].Title)
+	}
+}
