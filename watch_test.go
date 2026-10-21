@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -619,5 +620,73 @@ func TestNotifyNewlyPending_ReportsOnlyDeliveredRuns(t *testing.T) {
 	notifyNewlyPending(testNotifier(t, &sent), res, func(id string) { delivered = append(delivered, id) })
 	if strings.Join(delivered, ",") != "r1,r2" {
 		t.Errorf("delivered = %v, want [r1 r2] (hidden run not in items is skipped)", delivered)
+	}
+}
+
+// viewerAndRunsServer serves the viewer query with viewerResp (and
+// status) and any other query with an empty searchRuns page, counting
+// each kind of request.
+func viewerAndRunsServer(t *testing.T, status int, viewerResp string) (c *spaceclient.Client, viewerCalls, searchCalls *int) {
+	t.Helper()
+	viewerCalls, searchCalls = new(int), new(int)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "viewer") {
+			*viewerCalls++
+			w.WriteHeader(status)
+			fmt.Fprint(w, viewerResp)
+			return
+		}
+		*searchCalls++
+		fmt.Fprint(w, `{"data":{"searchRuns":{"pageInfo":{"endCursor":"","hasNextPage":false},"edges":[]}}}`)
+	}))
+	t.Cleanup(srv.Close)
+	return spaceclient.NewFromSDK(client.New(srv.Client(), fakeSession{endpoint: srv.URL})), viewerCalls, searchCalls
+}
+
+func TestDoPoll_LooksUpAndCachesViewer(t *testing.T) {
+	c, viewerCalls, searchCalls := viewerAndRunsServer(t, http.StatusOK, `{"data":{"viewer":{"id":"georgearnall"}}}`)
+	st := state.New()
+	var viewer string
+
+	for i := 0; i < 2; i++ {
+		if res := doPoll(context.Background(), c, st, config{}, &viewer); res.err != nil {
+			t.Fatalf("doPoll() #%d error = %v", i+1, res.err)
+		}
+	}
+	if viewer != "georgearnall" {
+		t.Errorf("viewer = %q, want georgearnall", viewer)
+	}
+	if *viewerCalls != 1 || *searchCalls != 2 {
+		t.Errorf("viewer queries = %d, search queries = %d; want 1 (cached) and 2", *viewerCalls, *searchCalls)
+	}
+}
+
+func TestDoPoll_ViewerLookupError(t *testing.T) {
+	c, _, searchCalls := viewerAndRunsServer(t, http.StatusInternalServerError, `{"errors":[{"message":"boom"}]}`)
+	var viewer string
+
+	res := doPoll(context.Background(), c, state.New(), config{}, &viewer)
+	if res.err == nil || !strings.Contains(res.err.Error(), "identifying current user") {
+		t.Fatalf("doPoll() error = %v, want an identifying-current-user error", res.err)
+	}
+	if res.authExpired {
+		t.Error("doPoll() authExpired = true for a non-auth error")
+	}
+	if viewer != "" || *searchCalls != 0 {
+		t.Errorf("viewer = %q, search queries = %d; want lookup retried next poll and no search", viewer, *searchCalls)
+	}
+	if res.reqTotal != 1 {
+		t.Errorf("doPoll() reqTotal = %d, want the failed lookup counted", res.reqTotal)
+	}
+}
+
+func TestDoPoll_ViewerLookupAuthExpired(t *testing.T) {
+	c, _, _ := viewerAndRunsServer(t, http.StatusUnauthorized, `{"errors":[{"message":"unauthorized"}]}`)
+	var viewer string
+
+	res := doPoll(context.Background(), c, state.New(), config{}, &viewer)
+	if res.err == nil || !res.authExpired {
+		t.Errorf("doPoll() = err %v, authExpired %v; want an auth-expired error so relogin is offered", res.err, res.authExpired)
 	}
 }
