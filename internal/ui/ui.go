@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattn/go-runewidth"
 	"golang.org/x/term"
 )
 
@@ -222,4 +223,46 @@ func envSupportsLinks(getenv func(string) string) bool {
 		return true
 	}
 	return false
+}
+
+// VisibleWidth returns how many terminal columns s occupies once its
+// escape sequences (SGR colors, OSC 8 hyperlinks) are removed.
+func VisibleWidth(s string) int {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != 0x1b || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		switch s[i+1] {
+		case '[': // CSI: parameters, then a final byte in 0x40-0x7e
+			j := i + 2
+			for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
+				j++
+			}
+			i = j
+		case ']': // OSC: terminated by BEL or ST (ESC \)
+			j := i + 2
+			for j < len(s) && s[j] != 0x07 && !(s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\') {
+				j++
+			}
+			if j < len(s) && s[j] == 0x1b {
+				j++
+			}
+			i = j
+		default:
+			i++
+		}
+	}
+	return runewidth.StringWidth(b.String())
+}
+
+// TerminalWidth returns stdout's width in columns, or 0 if it isn't a
+// terminal.
+func TerminalWidth() int {
+	w, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil {
+		return 0
+	}
+	return w
 }

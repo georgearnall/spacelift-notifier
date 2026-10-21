@@ -212,3 +212,21 @@ func TestRenderTable_PlanColumn(t *testing.T) {
 		t.Errorf("RenderTable() highlighted a non-destroying plan: %q", got)
 	}
 }
+
+func TestVisibleWidth(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"plain", 5},
+		{Style("bold", Bold, true), 4},
+		{Hyperlink("https://example.test/run", "open →"), 6},
+		{"· 2 pending", 11},
+		{"日本", 4},
+	}
+	for _, c := range cases {
+		if got := VisibleWidth(c.in); got != c.want {
+			t.Errorf("VisibleWidth(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}

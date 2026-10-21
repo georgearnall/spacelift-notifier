@@ -330,12 +330,35 @@ func renderConfig(cfg config, viewer string, showAll bool, notifier *notify.Noti
 }
 
 // frame turns rendered output into an in-place redraw: home the cursor,
-// clear the rest of each line as it's overwritten, and clear anything
-// below the last line. This avoids ghosting when a frame is narrower or
-// shorter than the previous one, without the flicker of clearing the
-// whole screen first.
-func frame(s string) string {
-	return ansiHome + strings.ReplaceAll(s, "\n", ansiClearEOL+"\n") + ansiClearBelow
+// clear each line before writing it, and clear anything below the last
+// line. This avoids ghosting when a frame is narrower or shorter than the
+// previous one, without the flicker of clearing the whole screen first.
+//
+// Each line is also cleared after it's written, to remove stale text to
+// the right of a wrapped line's tail, except when the line ends exactly at
+// the right margin: there the terminal defers the wrap and leaves the
+// cursor on the last cell, so clearing would erase the final character.
+// cols is the terminal width; 0 (unknown) skips the trailing clear.
+func frame(s string, cols int) string {
+	var b strings.Builder
+	b.WriteString(ansiHome)
+	lines := strings.SplitAfter(s, "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		text, nl := strings.CutSuffix(line, "\n")
+		b.WriteString(ansiClearEOL)
+		b.WriteString(text)
+		if w := ui.VisibleWidth(text); cols > 0 && w%cols != 0 {
+			b.WriteString(ansiClearEOL)
+		}
+		if nl {
+			b.WriteByte('\n')
+		}
+	}
+	b.WriteString(ansiClearBelow)
+	return b.String()
 }
 
 func runOnce(cfg config) {
@@ -441,7 +464,7 @@ func runWatch(cfg config) {
 		// continues from whatever column the previous line ended at
 		// instead of resetting to column 0. Normalize to "\r\n" so this
 		// renders correctly regardless of OPOST state.
-		out := frame(b.String())
+		out := frame(b.String(), ui.TerminalWidth())
 		if fullClear {
 			out = ansiClearScreen + out
 			fullClear = false

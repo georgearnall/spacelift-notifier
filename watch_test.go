@@ -17,6 +17,7 @@ import (
 	"github.com/georgearnall/spacewatch/internal/pending"
 	"github.com/georgearnall/spacewatch/internal/spaceclient"
 	"github.com/georgearnall/spacewatch/internal/state"
+	"github.com/georgearnall/spacewatch/internal/ui"
 	"github.com/spacelift-io/spacectl/client"
 	"github.com/spacelift-io/spacectl/client/session"
 )
@@ -564,10 +565,31 @@ func TestNotifyNewlyPending_SendsReminders(t *testing.T) {
 }
 
 func TestFrame_OverwritesInPlace(t *testing.T) {
-	got := frame("one\ntwo\n")
-	want := "\x1b[H" + "one\x1b[K\n" + "two\x1b[K\n" + "\x1b[J"
+	got := frame("one\ntwo\n", 80)
+	want := "\x1b[H" + "\x1b[Kone\x1b[K\n" + "\x1b[Ktwo\x1b[K\n" + "\x1b[J"
 	if got != want {
 		t.Errorf("frame() = %q, want %q", got, want)
+	}
+}
+
+func TestFrame_ExactWidthLineKeepsLastCharacter(t *testing.T) {
+	// A line exactly as wide as the terminal leaves the cursor on its last
+	// cell (deferred wrap), so a trailing clear would erase that character.
+	line := strings.Repeat("x", 9) + "Z"
+	colored := ui.Style(line, ui.Bold, true) // escape bytes must not count towards the width
+	for _, in := range []string{line, colored} {
+		got := frame(in+"\n", 10)
+		if strings.Contains(got, "Z"+ansiClearEOL) || strings.Contains(got, "Z"+ui.Reset+ansiClearEOL) {
+			t.Errorf("frame() clears after an exact-width line: %q", got)
+		}
+	}
+	// Two full rows (wrapped exactly) behave the same.
+	if got := frame(strings.Repeat("y", 20)+"\n", 10); strings.Contains(got, "y"+ansiClearEOL) {
+		t.Errorf("frame() clears after a line that wraps exactly at the margin: %q", got)
+	}
+	// Unknown width: never clear after the text.
+	if got := frame("abc\n", 0); strings.Contains(got, "abc"+ansiClearEOL) {
+		t.Errorf("frame() with unknown width cleared after text: %q", got)
 	}
 }
 
