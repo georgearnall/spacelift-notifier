@@ -226,3 +226,18 @@ func (c *Client) Stats() (total, windowCount int) {
 func (c *Client) RunURL(stackID, runID string) string {
 	return c.sdkClient().URL("/stack/%s/run/%s", stackID, runID)
 }
+
+// ViewerID returns the login of the authenticated Spacelift user. For
+// GitHub-backed accounts this is the user's GitHub login, which is what
+// run commit authors are recorded as.
+func (c *Client) ViewerID(ctx context.Context) (string, error) {
+	var q struct {
+		Viewer struct {
+			ID string `graphql:"id"`
+		} `graphql:"viewer"`
+	}
+	if err := c.Query(ctx, &q, nil); err != nil {
+		return "", err
+	}
+	return q.Viewer.ID, nil
+}

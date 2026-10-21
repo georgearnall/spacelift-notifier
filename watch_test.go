@@ -175,7 +175,8 @@ func TestDoPoll_NewlyPendingAndStats(t *testing.T) {
 	cfg := config{}
 	cfg.teamLabels.values = []string{"folder:owning-team/ecommerce"}
 
-	res := doPoll(context.Background(), c, st, cfg)
+	viewer := "me"
+	res := doPoll(context.Background(), c, st, cfg, &viewer)
 	if res.err != nil {
 		t.Fatalf("doPoll() error = %v", res.err)
 	}
@@ -201,7 +202,8 @@ func TestDoPoll_PropagatesQueryError(t *testing.T) {
 	c := spaceclient.NewFromSDK(sdk)
 	st := state.New()
 
-	res := doPoll(context.Background(), c, st, config{})
+	viewer := "me"
+	res := doPoll(context.Background(), c, st, config{}, &viewer)
 	if res.err == nil {
 		t.Fatal("doPoll() error = nil, want the query error to propagate")
 	}
@@ -240,7 +242,8 @@ func TestDoPoll_SetsAuthExpiredOnUnauthorizedError(t *testing.T) {
 	c := spaceclient.NewFromSDK(sdk)
 	st := state.New()
 
-	res := doPoll(context.Background(), c, st, config{})
+	viewer := "me"
+	res := doPoll(context.Background(), c, st, config{}, &viewer)
 	if res.err == nil {
 		t.Fatal("doPoll() error = nil, want an error")
 	}
@@ -268,7 +271,8 @@ func TestDoPoll_SetsAuthExpiredOnBareUnauthorizedError(t *testing.T) {
 	c := spaceclient.NewFromSDK(sdk)
 	st := state.New()
 
-	res := doPoll(context.Background(), c, st, config{})
+	viewer := "me"
+	res := doPoll(context.Background(), c, st, config{}, &viewer)
 	if res.err == nil {
 		t.Fatal("doPoll() error = nil, want an error")
 	}
@@ -518,5 +522,27 @@ func TestFooter_OmitsNextPollWhenNoneScheduled(t *testing.T) {
 	got := footer(pollResult{polledAt: time.Now()}, config{requestBudget: 300}, 0, "")
 	if strings.Contains(got, "next poll") {
 		t.Errorf("footer() = %q, want no next-poll text when none is scheduled", got)
+	}
+}
+
+func TestVisibleItems(t *testing.T) {
+	items := []pending.PendingConfirmation{
+		{RunID: "mine", AuthorLogin: "me"},
+		{RunID: "theirs", AuthorLogin: "them"},
+	}
+	if got := visibleItems(items, "me", false); len(got) != 1 || got[0].RunID != "mine" {
+		t.Errorf("visibleItems(showAll=false) = %+v, want only mine", got)
+	}
+	if got := visibleItems(items, "me", true); len(got) != 2 {
+		t.Errorf("visibleItems(showAll=true) = %+v, want both", got)
+	}
+}
+
+func TestRenderTable_EmptyMineViewHintsToggle(t *testing.T) {
+	if got := renderTable(nil, false, "a", 0, false, false); !strings.Contains(got, "a: show all team runs") {
+		t.Errorf("renderTable() empty mine view = %q, want a hint about the toggle", got)
+	}
+	if got := renderTable(nil, true, "a", 0, false, false); !strings.Contains(got, "no pending confirmations for your team") {
+		t.Errorf("renderTable() empty team view = %q", got)
 	}
 }

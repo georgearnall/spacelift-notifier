@@ -256,3 +256,24 @@ func TestPoll_MapsPlanDelta(t *testing.T) {
 		t.Errorf("Plan = %+v for a run without a delta, want nil", got[1].Plan)
 	}
 }
+
+func TestIsMine(t *testing.T) {
+	cases := []struct {
+		name string
+		p    PendingConfirmation
+		want bool
+	}{
+		{"commit author", PendingConfirmation{AuthorLogin: "GeorgeArnall", TriggeredBy: "api::oidc::t::commerce"}, true},
+		{"triggered directly", PendingConfirmation{AuthorLogin: "someone", TriggeredBy: "georgearnall"}, true},
+		{"someone else", PendingConfirmation{AuthorLogin: "someone", TriggeredBy: "api::oidc::t::commerce"}, false},
+		{"no author info", PendingConfirmation{}, false},
+	}
+	for _, c := range cases {
+		if got := c.p.IsMine("georgearnall"); got != c.want {
+			t.Errorf("%s: IsMine() = %v, want %v", c.name, got, c.want)
+		}
+	}
+	if (PendingConfirmation{}).IsMine("") {
+		t.Error("IsMine(\"\") = true for empty fields, want false")
+	}
+}

@@ -16,6 +16,7 @@ const (
 	keyDown
 	keyEnter
 	keyRelogin
+	keyToggleAll
 )
 
 // readKeys puts stdin into raw mode (if it's a terminal) and sends
@@ -102,6 +103,8 @@ func decodeKey(b []byte) key {
 		return keyEnter
 	case len(b) == 1 && b[0] == 'l':
 		return keyRelogin
+	case len(b) == 1 && b[0] == 'a':
+		return keyToggleAll
 	case len(b) == 3 && b[0] == 0x1b && b[1] == '[' && b[2] == 'A':
 		return keyUp
 	case len(b) == 3 && b[0] == 0x1b && b[1] == '[' && b[2] == 'B':

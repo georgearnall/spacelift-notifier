@@ -91,8 +91,21 @@ func fail(format string, args ...any) {
 // doPoll runs one poll cycle: query pending confirmations, run them
 // through the dedup state to find which are newly pending, and capture
 // the request-count stats as of this poll.
-func doPoll(ctx context.Context, c *spaceclient.Client, st *state.State, cfg config) pollResult {
+//
+// viewer caches the authenticated user's login; if it's empty it is
+// looked up first, and a failure is reported like any other poll error
+// (so an expired session still offers relogin).
+func doPoll(ctx context.Context, c *spaceclient.Client, st *state.State, cfg config, viewer *string) pollResult {
 	now := time.Now()
+	if *viewer == "" {
+		id, err := c.ViewerID(ctx)
+		if err != nil {
+			res := pollResult{polledAt: now, err: fmt.Errorf("identifying current user: %w", err), authExpired: isUnauthorizedErr(err)}
+			res.reqTotal, res.reqWindow = c.Stats()
+			return res
+		}
+		*viewer = id
+	}
 	items, err := pending.Poll(ctx, c, labels.Config{Labels: cfg.teamLabels.values})
 	res := pollResult{polledAt: now, err: err, authExpired: isUnauthorizedErr(err)}
 	if err != nil {
@@ -108,6 +121,31 @@ func doPoll(ctx context.Context, c *spaceclient.Client, st *state.State, cfg con
 	res.items = items
 	res.reqTotal, res.reqWindow = c.Stats()
 	return res
+}
+
+// visibleItems returns the runs shown in the current view: all of them
+// when showAll is set, otherwise only the viewer's own.
+func visibleItems(items []pending.PendingConfirmation, viewer string, showAll bool) []pending.PendingConfirmation {
+	if showAll {
+		return items
+	}
+	var mine []pending.PendingConfirmation
+	for _, it := range items {
+		if it.IsMine(viewer) {
+			mine = append(mine, it)
+		}
+	}
+	return mine
+}
+
+// renderTable renders the visible runs, with an empty-state message that
+// says which view is active and how to switch (toggleHint, e.g. "a" or
+// "--all").
+func renderTable(items []pending.PendingConfirmation, showAll bool, toggleHint string, selected int, linksSupported, colorEnabled bool) string {
+	if len(items) == 0 && !showAll {
+		return fmt.Sprintf("no pending confirmations from your commits (%s: show all team runs)\n", toggleHint)
+	}
+	return ui.RenderTable(renderRows(items, selected), linksSupported, colorEnabled)
 }
 
 // notifyNewlyPending sends a desktop notification for each run that just
@@ -212,10 +250,12 @@ func runOnce(cfg config) {
 	}
 	st.UseLabels(cfg.teamLabels.values)
 
-	res := doPoll(ctx, c, st, cfg)
+	var viewer string
+	res := doPoll(ctx, c, st, cfg, &viewer)
 	if res.err != nil {
 		fail("%v", res.err)
 	}
+	res.items = visibleItems(res.items, viewer, cfg.all)
 
 	if !cfg.noNotify {
 		notifyNewlyPending(notify.New(), res)
@@ -226,7 +266,7 @@ func runOnce(cfg config) {
 
 	linksSupported := ui.SupportsLinks()
 	colorEnabled := ui.ColorEnabled()
-	fmt.Print(ui.RenderTable(renderRows(res.items, -1), linksSupported, colorEnabled))
+	fmt.Print(renderTable(res.items, cfg.all, "--all", -1, linksSupported, colorEnabled))
 	fmt.Print(ui.Style(footer(res, cfg, 0, ""), ui.Dim, colorEnabled))
 }
 
@@ -264,6 +304,8 @@ func runWatch(cfg config) {
 
 	var (
 		last      pollResult
+		viewer    string
+		showAll   = cfg.all
 		selected  int
 		nextDelay time.Duration // what poll() last scheduled, shown in the footer
 	)
@@ -279,8 +321,11 @@ func runWatch(cfg config) {
 		case last.err != nil:
 			b.WriteString(ui.Style(fmt.Sprintf("spacewatch: poll error (retrying): %v\n\n", last.err), ui.BoldRed, colorEnabled))
 		}
-		b.WriteString(ui.RenderTable(renderRows(last.items, selected), linksSupported, colorEnabled))
-		quitHint := " · q to quit"
+		b.WriteString(renderTable(visibleItems(last.items, viewer, showAll), showAll, "a", selected, linksSupported, colorEnabled))
+		quitHint := " · a to show all team runs · q to quit"
+		if showAll {
+			quitHint = " · a to show only yours · q to quit"
+		}
 		if last.authExpired {
 			quitHint = " · l to relogin" + quitHint
 		}
@@ -295,23 +340,30 @@ func runWatch(cfg config) {
 		fmt.Print(crlf(b.String()))
 	}
 
+	clampSelection := func() {
+		n := len(visibleItems(last.items, viewer, showAll))
+		if selected >= n {
+			selected = n - 1
+		}
+		if selected < 0 {
+			selected = 0
+		}
+	}
+
 	poll := func() time.Duration {
-		last = doPoll(ctx, c, st, cfg)
+		last = doPoll(ctx, c, st, cfg, &viewer)
 		if last.err == nil {
 			if !cfg.noNotify {
-				notifyNewlyPending(notifier, last)
+				view := last
+				view.items = visibleItems(last.items, viewer, showAll)
+				notifyNewlyPending(notifier, view)
 			}
 			if err := st.Save(); err != nil {
 				last.err = fmt.Errorf("saving state: %w", err)
 			}
 		}
-		if selected >= len(last.items) {
-			selected = len(last.items) - 1
-		}
-		if selected < 0 {
-			selected = 0
-		}
-		nextDelay = nextInterval(cfg, len(last.items), last.reqWindow)
+		clampSelection()
+		nextDelay = nextInterval(cfg, len(visibleItems(last.items, viewer, showAll)), last.reqWindow)
 		if last.err != nil && nextDelay < cfg.idleInterval {
 			nextDelay = cfg.idleInterval // back off on any poll error rather than hammering a failing API
 		}
@@ -336,14 +388,18 @@ func runWatch(cfg config) {
 					redraw()
 				}
 			case keyDown:
-				if selected < len(last.items)-1 {
+				if selected < len(visibleItems(last.items, viewer, showAll))-1 {
 					selected++
 					redraw()
 				}
 			case keyEnter:
-				if selected >= 0 && selected < len(last.items) {
-					openURL(last.items[selected].RunURL)
+				if view := visibleItems(last.items, viewer, showAll); selected >= 0 && selected < len(view) {
+					openURL(view[selected].RunURL)
 				}
+			case keyToggleAll:
+				showAll = !showAll
+				clampSelection()
+				redraw()
 			case keyRelogin:
 				var resetTimer, handled bool
 				last, resetTimer, handled = applyReloginKey(last, func() error {

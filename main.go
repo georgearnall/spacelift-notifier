@@ -33,6 +33,8 @@ Flags:
   --interval duration       Poll interval while there are pending confirmations (default 20s)
   --idle-interval duration  Poll interval while there are none (default 60s)
   --request-budget int      Self-imposed cap on API requests per hour (default 300)
+  --all                     Show every pending run on your team's stacks, not
+                            just ones from your commits (toggle with a)
   --once                    Run a single poll cycle, print results, and exit
   --no-notify               Suppress desktop notifications
   -h, --help                Show this help text
@@ -70,6 +72,7 @@ type config struct {
 	requestBudget  int
 	once           bool
 	noNotify       bool
+	all            bool
 }
 
 // parseFlags builds the default config and applies args on top of it.
@@ -90,6 +93,7 @@ func parseFlags(args []string) (config, error) {
 	fs.DurationVar(&cfg.activeInterval, "interval", cfg.activeInterval, "poll interval while runs are pending")
 	fs.DurationVar(&cfg.idleInterval, "idle-interval", cfg.idleInterval, "poll interval while idle")
 	fs.IntVar(&cfg.requestBudget, "request-budget", cfg.requestBudget, "self-imposed API request budget per hour")
+	fs.BoolVar(&cfg.all, "all", false, "show every team run, not just yours")
 	fs.BoolVar(&cfg.once, "once", false, "run a single poll cycle and exit")
 	fs.BoolVar(&cfg.noNotify, "no-notify", false, "suppress desktop notifications")
 
