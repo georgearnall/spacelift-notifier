@@ -12,12 +12,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/georgearnall/spacelift-notifier/internal/labels"
-	"github.com/georgearnall/spacelift-notifier/internal/notify"
-	"github.com/georgearnall/spacelift-notifier/internal/pending"
-	"github.com/georgearnall/spacelift-notifier/internal/spaceclient"
-	"github.com/georgearnall/spacelift-notifier/internal/state"
-	"github.com/georgearnall/spacelift-notifier/internal/ui"
+	"github.com/georgearnall/spacewatch/internal/labels"
+	"github.com/georgearnall/spacewatch/internal/notify"
+	"github.com/georgearnall/spacewatch/internal/pending"
+	"github.com/georgearnall/spacewatch/internal/spaceclient"
+	"github.com/georgearnall/spacewatch/internal/state"
+	"github.com/georgearnall/spacewatch/internal/ui"
 )
 
 const (
@@ -84,7 +84,7 @@ func isUnauthorizedErr(err error) bool {
 // fail prints an error and exits. Used for startup failures that leave
 // nothing sensible to run (e.g. no Spacelift session available).
 func fail(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "spacelift-notifier: "+format+"\n", args...)
+	fmt.Fprintf(os.Stderr, "spacewatch: "+format+"\n", args...)
 	os.Exit(1)
 }
 
@@ -126,7 +126,7 @@ func notifyNewlyPending(n *notify.Notifier, res pollResult) {
 			continue
 		}
 		if err := n.PendingConfirmation(it.StackName, it.Title); err != nil {
-			fmt.Fprintln(os.Stderr, "spacelift-notifier: notify:", err)
+			fmt.Fprintln(os.Stderr, "spacewatch: notify:", err)
 		}
 	}
 }
@@ -215,7 +215,7 @@ func runOnce(cfg config) {
 		notifyNewlyPending(notify.New(), res)
 	}
 	if err := st.Save(); err != nil {
-		fmt.Fprintln(os.Stderr, "spacelift-notifier: saving state:", err)
+		fmt.Fprintln(os.Stderr, "spacewatch: saving state:", err)
 	}
 
 	linksSupported := ui.SupportsLinks()
@@ -267,11 +267,11 @@ func runWatch(cfg config) {
 		b.WriteString(ansiClearScreen)
 		switch {
 		case last.reloginErr != nil:
-			b.WriteString(ui.Style(fmt.Sprintf("spacelift-notifier: relogin failed: %v (press l to retry)\n\n", last.reloginErr), ui.BoldRed, colorEnabled))
+			b.WriteString(ui.Style(fmt.Sprintf("spacewatch: relogin failed: %v (press l to retry)\n\n", last.reloginErr), ui.BoldRed, colorEnabled))
 		case last.authExpired:
-			b.WriteString(ui.Style("spacelift-notifier: session expired - press l to relogin\n\n", ui.BoldRed, colorEnabled))
+			b.WriteString(ui.Style("spacewatch: session expired - press l to relogin\n\n", ui.BoldRed, colorEnabled))
 		case last.err != nil:
-			b.WriteString(ui.Style(fmt.Sprintf("spacelift-notifier: poll error (retrying): %v\n\n", last.err), ui.BoldRed, colorEnabled))
+			b.WriteString(ui.Style(fmt.Sprintf("spacewatch: poll error (retrying): %v\n\n", last.err), ui.BoldRed, colorEnabled))
 		}
 		b.WriteString(ui.RenderTable(renderRows(last.items, selected), linksSupported, colorEnabled))
 		quitHint := " · q to quit"
@@ -408,7 +408,7 @@ func relogin(ctx context.Context, checkSupported func() error, reauth func(conte
 		fmt.Print(ansiAltScreenOn)
 	}()
 
-	fmt.Println("spacelift-notifier: running `spacectl profile login`...")
+	fmt.Println("spacewatch: running `spacectl profile login`...")
 	if err := runSpacectlLogin(); err != nil {
 		return fmt.Errorf("spacectl profile login: %w", err)
 	}
@@ -501,6 +501,6 @@ func openCommand(goos string) string {
 // hyperlinks.
 func openURL(url string) {
 	if err := runOpen(url); err != nil {
-		fmt.Fprintln(os.Stderr, "spacelift-notifier: open:", err)
+		fmt.Fprintln(os.Stderr, "spacewatch: open:", err)
 	}
 }

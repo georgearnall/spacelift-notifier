@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/georgearnall/spacelift-notifier/internal/notify"
-	"github.com/georgearnall/spacelift-notifier/internal/pending"
-	"github.com/georgearnall/spacelift-notifier/internal/spaceclient"
-	"github.com/georgearnall/spacelift-notifier/internal/state"
+	"github.com/georgearnall/spacewatch/internal/notify"
+	"github.com/georgearnall/spacewatch/internal/pending"
+	"github.com/georgearnall/spacewatch/internal/spaceclient"
+	"github.com/georgearnall/spacewatch/internal/state"
 	"github.com/spacelift-io/spacectl/client"
 	"github.com/spacelift-io/spacectl/client/session"
 )

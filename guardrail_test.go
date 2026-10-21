@@ -12,7 +12,7 @@ import (
 // when it scans the repo below.
 var mutateCallPattern = "." + "Mutate("
 
-// TestNoMutationCallsAnywhere is a guardrail: spacelift-notifier is
+// TestNoMutationCallsAnywhere is a guardrail: spacewatch is
 // read-only by design - it must never call the Spacelift SDK's Mutate
 // method (confirm/discard/approve are all mutations). If this test
 // fails, something added a mutation call and needs to be reconsidered

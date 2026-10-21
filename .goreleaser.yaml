@@ -1,5 +1,7 @@
 version: 2
 
+project_name: spacewatch
+
 builds:
   - env:
       - CGO_ENABLED=0
@@ -33,7 +35,7 @@ homebrew_casks:
       owner: georgearnall
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: https://github.com/georgearnall/spacelift-notifier
+    homepage: https://github.com/georgearnall/spacewatch
     description: Watch Spacelift for stack runs awaiting confirmation and link to them
     commit_msg_template: "Update {{ .ProjectName }} to {{ .Tag }}"
     # Binaries are unsigned, so strip the quarantine bit Homebrew applies to
@@ -43,6 +45,6 @@ homebrew_casks:
     custom_block: |
       postflight_steps do
         on_macos do
-          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/spacelift-notifier"]
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/spacewatch"]
         end
       end

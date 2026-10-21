@@ -1,4 +1,4 @@
-module github.com/georgearnall/spacelift-notifier
+module github.com/georgearnall/spacewatch
 
 go 1.26.4
 

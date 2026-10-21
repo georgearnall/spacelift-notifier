@@ -114,7 +114,7 @@ func TestLoad_CorruptFileReturnsError(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 
-	confDir := filepath.Join(dir, "spacelift-notifier")
+	confDir := filepath.Join(dir, "spacewatch")
 	if err := os.MkdirAll(confDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestSave_WritesAtomically(t *testing.T) {
 	}
 
 	// No leftover temp files should remain after a successful save.
-	matches, err := filepath.Glob(filepath.Join(dir, "spacelift-notifier", "state-*.json.tmp"))
+	matches, err := filepath.Glob(filepath.Join(dir, "spacewatch", "state-*.json.tmp"))
 	if err != nil {
 		t.Fatal(err)
 	}

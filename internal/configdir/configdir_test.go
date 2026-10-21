@@ -13,7 +13,7 @@ func TestDir_UsesXDGConfigHomeWhenSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dir() error = %v", err)
 	}
-	want := filepath.Join("/xdg", "spacelift-notifier")
+	want := filepath.Join("/xdg", "spacewatch")
 	if got != want {
 		t.Errorf("Dir() = %q, want %q", got, want)
 	}
@@ -27,7 +27,7 @@ func TestDir_FallsBackToHomeConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dir() error = %v", err)
 	}
-	want := filepath.Join("/home/tester", ".config", "spacelift-notifier")
+	want := filepath.Join("/home/tester", ".config", "spacewatch")
 	if got != want {
 		t.Errorf("Dir() = %q, want %q", got, want)
 	}

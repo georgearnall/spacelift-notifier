@@ -13,7 +13,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/georgearnall/spacelift-notifier/internal/configdir"
+	"github.com/georgearnall/spacewatch/internal/configdir"
 )
 
 // RunRecord tracks when a run was first observed pending confirmation.

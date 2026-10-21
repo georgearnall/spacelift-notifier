@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/georgearnall/spacelift-notifier/internal/labels"
+	"github.com/georgearnall/spacewatch/internal/labels"
 )
 
 const pageSize = 50
