@@ -199,6 +199,7 @@ func runOnce(cfg config) {
 	if err != nil {
 		fail("loading state: %v", err)
 	}
+	st.UseLabels(cfg.teamLabels.values)
 
 	res := doPoll(ctx, c, st, cfg)
 	if res.err != nil {
@@ -228,6 +229,7 @@ func runWatch(cfg config) {
 	if err != nil {
 		fail("loading state: %v", err)
 	}
+	st.UseLabels(cfg.teamLabels.values)
 	notifier := notify.New()
 	linksSupported := ui.SupportsLinks()
 	colorEnabled := ui.ColorEnabled()

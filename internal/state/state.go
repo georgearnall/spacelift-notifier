@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/georgearnall/spacelift-notifier/internal/configdir"
@@ -27,6 +28,7 @@ type RunRecord struct {
 type State struct {
 	Runs     map[string]RunRecord `json:"runs"`
 	LastPoll time.Time            `json:"last_poll,omitempty"`
+	Labels   []string             `json:"labels,omitempty"`
 }
 
 // New returns an empty, never-yet-polled state.
@@ -61,6 +63,21 @@ func (s *State) Observe(pendingIDs []string, now time.Time) (newlyPending []stri
 	s.Runs = next
 	s.LastPoll = now
 	return newlyPending
+}
+
+// UseLabels records the team labels this state is tracking. If they differ
+// from the labels recorded last time (e.g. the user switched --team), the
+// recorded runs belong to a different set of stacks, so the state is reset
+// and the next Observe is a cold start. Without this, every run already
+// pending for the new team would be announced at once.
+func (s *State) UseLabels(labels []string) {
+	sorted := slices.Sorted(slices.Values(labels))
+	if slices.Equal(sorted, s.Labels) {
+		return
+	}
+	s.Labels = sorted
+	s.Runs = map[string]RunRecord{}
+	s.LastPoll = time.Time{}
 }
 
 // statePath returns where state.json lives.
