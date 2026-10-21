@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shurcooL/graphql"
 	"github.com/spacelift-io/spacectl/client"
 	"github.com/spacelift-io/spacectl/client/session"
 )
@@ -212,48 +211,18 @@ func (c *Client) recordRequest() {
 }
 
 // Stats returns the total number of requests made since this Client was
-// created, and the number made within the current rolling hour-long
-// window (used to enforce --request-budget).
+// created, and the number made within the current hour-long window (used
+// to enforce --request-budget). The window is fixed, not rolling: it
+// starts at the first request and resets on the first request made an
+// hour or more after that.
 func (c *Client) Stats() (total, windowCount int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.requestCount, c.windowCount
 }
 
-// StackURL returns a link directly to a stack's page in the Spacelift web
-// UI, confirmed against spacectl's own "stack open" command.
-func (c *Client) StackURL(stackID string) string {
-	return c.sdkClient().URL("/stack/%s", stackID)
-}
-
 // RunURL returns a link directly to a specific run's page, confirmed
 // against spacectl's own "stack confirm" command construction.
 func (c *Client) RunURL(stackID, runID string) string {
 	return c.sdkClient().URL("/stack/%s/run/%s", stackID, runID)
-}
-
-// Viewer identifies who the tool is authenticated as.
-type Viewer struct {
-	ID    string
-	Name  string
-	Admin bool
-}
-
-// Viewer queries the identity of the currently authenticated user.
-func (c *Client) Viewer(ctx context.Context) (Viewer, error) {
-	var q struct {
-		Viewer struct {
-			ID    graphql.String  `graphql:"id"`
-			Name  graphql.String  `graphql:"name"`
-			Admin graphql.Boolean `graphql:"admin"`
-		} `graphql:"viewer"`
-	}
-	if err := c.Query(ctx, &q, nil); err != nil {
-		return Viewer{}, err
-	}
-	return Viewer{
-		ID:    string(q.Viewer.ID),
-		Name:  string(q.Viewer.Name),
-		Admin: bool(q.Viewer.Admin),
-	}, nil
 }

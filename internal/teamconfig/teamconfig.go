@@ -64,38 +64,15 @@ func Load() (*Config, error) {
 	return &c, nil
 }
 
-// Save writes the team config to disk atomically (write to a temp file,
-// then rename), so a crash mid-write can never leave a corrupt config file.
+// Save writes the team config to disk atomically, so a crash mid-write can
+// never leave a corrupt config file.
 func (c *Config) Save() error {
 	p, err := path()
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(p)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("creating config directory %s: %w", dir, err)
-	}
-
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling team config: %w", err)
-	}
-
-	tmp, err := os.CreateTemp(dir, "config-*.json.tmp")
-	if err != nil {
-		return fmt.Errorf("creating temp config file: %w", err)
-	}
-	defer os.Remove(tmp.Name()) // no-op once the rename below succeeds
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return fmt.Errorf("writing temp config file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("closing temp config file: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), p); err != nil {
-		return fmt.Errorf("renaming temp config file into place: %w", err)
+	if err := configdir.WriteJSON(p, c); err != nil {
+		return fmt.Errorf("saving team config: %w", err)
 	}
 	return nil
 }

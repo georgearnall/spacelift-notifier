@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/georgearnall/spacelift-notifier/internal/configdir"
@@ -27,6 +28,7 @@ type RunRecord struct {
 type State struct {
 	Runs     map[string]RunRecord `json:"runs"`
 	LastPoll time.Time            `json:"last_poll,omitempty"`
+	Labels   []string             `json:"labels,omitempty"`
 }
 
 // New returns an empty, never-yet-polled state.
@@ -61,6 +63,21 @@ func (s *State) Observe(pendingIDs []string, now time.Time) (newlyPending []stri
 	s.Runs = next
 	s.LastPoll = now
 	return newlyPending
+}
+
+// UseLabels records the team labels this state is tracking. If they differ
+// from the labels recorded last time (e.g. the user switched --team), the
+// recorded runs belong to a different set of stacks, so the state is reset
+// and the next Observe is a cold start. Without this, every run already
+// pending for the new team would be announced at once.
+func (s *State) UseLabels(labels []string) {
+	sorted := slices.Sorted(slices.Values(labels))
+	if slices.Equal(sorted, s.Labels) {
+		return
+	}
+	s.Labels = sorted
+	s.Runs = map[string]RunRecord{}
+	s.LastPoll = time.Time{}
 }
 
 // statePath returns where state.json lives.
@@ -98,38 +115,15 @@ func Load() (*State, error) {
 	return &s, nil
 }
 
-// Save writes the state to disk atomically (write to a temp file, then
-// rename), so a crash mid-write can never leave a corrupt state file.
+// Save writes the state to disk atomically, so a crash mid-write can never
+// leave a corrupt state file.
 func (s *State) Save() error {
 	path, err := statePath()
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("creating state directory %s: %w", dir, err)
-	}
-
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling state: %w", err)
-	}
-
-	tmp, err := os.CreateTemp(dir, "state-*.json.tmp")
-	if err != nil {
-		return fmt.Errorf("creating temp state file: %w", err)
-	}
-	defer os.Remove(tmp.Name()) // no-op once the rename below succeeds
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return fmt.Errorf("writing temp state file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("closing temp state file: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return fmt.Errorf("renaming temp state file into place: %w", err)
+	if err := configdir.WriteJSON(path, s); err != nil {
+		return fmt.Errorf("saving state: %w", err)
 	}
 	return nil
 }

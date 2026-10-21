@@ -34,39 +34,10 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
 	return NewFromSDK(sdk)
 }
 
-func TestClient_Viewer(t *testing.T) {
-	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"data":{"viewer":{"id":"georgearnall","name":"George Arnall","admin":false}}}`)
-	})
-
-	v, err := c.Viewer(context.Background())
-	if err != nil {
-		t.Fatalf("Viewer() error = %v", err)
-	}
-	want := Viewer{ID: "georgearnall", Name: "George Arnall", Admin: false}
-	if v != want {
-		t.Errorf("Viewer() = %+v, want %+v", v, want)
-	}
-}
-
-func TestClient_Viewer_PropagatesError(t *testing.T) {
-	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprint(w, `{"errors":[{"message":"boom"}]}`)
-	})
-
-	if _, err := c.Viewer(context.Background()); err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestClient_URLs(t *testing.T) {
+func TestClient_RunURL(t *testing.T) {
 	sdk := client.New(http.DefaultClient, fakeSession{endpoint: "https://trainline-private.app.spacelift.io/"})
 	c := NewFromSDK(sdk)
 
-	if got, want := c.StackURL("applepay-api-prod"), "https://trainline-private.app.spacelift.io/stack/applepay-api-prod"; got != want {
-		t.Errorf("StackURL() = %q, want %q", got, want)
-	}
 	if got, want := c.RunURL("applepay-api-prod", "01KZZTZETM9BP9E3XHNH0813NE"), "https://trainline-private.app.spacelift.io/stack/applepay-api-prod/run/01KZZTZETM9BP9E3XHNH0813NE"; got != want {
 		t.Errorf("RunURL() = %q, want %q", got, want)
 	}

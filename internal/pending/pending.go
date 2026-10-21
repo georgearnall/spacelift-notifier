@@ -6,7 +6,9 @@ package pending
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/georgearnall/spacelift-notifier/internal/labels"
 )
@@ -54,7 +56,8 @@ type searchQueryPredicate struct {
 }
 
 type searchQueryFieldConstraint struct {
-	EnumEquals []string `json:"enumEquals,omitempty"`
+	EnumEquals   []string `json:"enumEquals,omitempty"`
+	StringEquals []string `json:"stringEquals,omitempty"`
 }
 
 // searchRunsQuery mirrors the fields of Query.searchRuns actually used
@@ -102,10 +105,9 @@ type spaceFields struct {
 	Name string `graphql:"name"`
 }
 
-// Poll queries every run currently in the UNCONFIRMED state, paginating as
-// needed, and returns only those the caller can actually confirm
-// (Run.canConfirm) and whose stack carries one of the configured team
-// labels.
+// Poll queries runs currently in the UNCONFIRMED state on stacks carrying
+// one of the configured team labels, paginating as needed, and returns
+// only those the caller can actually confirm (Run.canConfirm).
 func Poll(ctx context.Context, c queryer, cfg labels.Config) ([]PendingConfirmation, error) {
 	var (
 		results []PendingConfirmation
@@ -118,10 +120,21 @@ func Poll(ctx context.Context, c queryer, cfg labels.Config) ([]PendingConfirmat
 			"input": SearchInput{
 				First: &first,
 				After: after,
-				Predicates: []searchQueryPredicate{{
-					Field:      "state",
-					Constraint: searchQueryFieldConstraint{EnumEquals: []string{"UNCONFIRMED"}},
-				}},
+				Predicates: []searchQueryPredicate{
+					{
+						Field:      "state",
+						Constraint: searchQueryFieldConstraint{EnumEquals: []string{"UNCONFIRMED"}},
+					},
+					// Filters server-side on the stack's labels: exact match,
+					// OR across values (verified against the live API). Without
+					// it every unconfirmed run in the account is paginated
+					// through and filtered here. labels.Match below still runs
+					// to pick MatchedLabel.
+					{
+						Field:      "labels",
+						Constraint: searchQueryFieldConstraint{StringEquals: cfg.Labels},
+					},
+				},
 			},
 		}
 
@@ -142,10 +155,10 @@ func Poll(ctx context.Context, c queryer, cfg labels.Config) ([]PendingConfirmat
 			results = append(results, PendingConfirmation{
 				RunID:        run.ID,
 				StackID:      stack.ID,
-				StackName:    stack.Name,
-				SpaceName:    stack.SpaceDetails.Name,
-				Title:        run.Title,
-				Branch:       run.Branch,
+				StackName:    sanitize(stack.Name),
+				SpaceName:    sanitize(stack.SpaceDetails.Name),
+				Title:        sanitize(run.Title),
+				Branch:       sanitize(run.Branch),
 				CreatedAt:    time.Unix(run.CreatedAt, 0),
 				UpdatedAt:    time.Unix(run.UpdatedAt, 0),
 				MatchedLabel: matchedOn,
@@ -161,4 +174,19 @@ func Poll(ctx context.Context, c queryer, cfg labels.Config) ([]PendingConfirmat
 	}
 
 	return results, nil
+}
+
+// sanitize replaces control characters and bidi formatting characters
+// with spaces. Run titles are commit messages, so anyone who can push
+// controls them; left as-is, an embedded newline breaks the table and an
+// escape sequence (OSC 52 clipboard write, OSC 8 link spoofing, or an
+// early terminator inside the OSC 9 notification) would be interpreted
+// by the user's terminal.
+func sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) {
+			return ' '
+		}
+		return r
+	}, s)
 }

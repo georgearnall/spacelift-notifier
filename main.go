@@ -26,16 +26,16 @@ Flags:
                             If neither this nor --team-label is given and no
                             team is configured yet, you'll be prompted for one
                             (once) on startup.
-  --team-label value       Stack label that must match exactly for a stack to be
-                            considered yours (repeatable; supplying this flag
+  --team-label value        Stack label that must match exactly for a stack to
+                            be considered yours (repeatable; supplying this flag
                             replaces the default rather than adding to it, and
                             bypasses --team/config.json entirely).
   --interval duration       Poll interval while there are pending confirmations (default 20s)
   --idle-interval duration  Poll interval while there are none (default 60s)
   --request-budget int      Self-imposed cap on API requests per hour (default 300)
   --once                    Run a single poll cycle, print results, and exit
-  --no-notify                Suppress desktop notifications
-  -h, --help                 Show this help text
+  --no-notify               Suppress desktop notifications
+  -h, --help                Show this help text
 
 spacelift-notifier never calls a Spacelift mutation - it only reads and links.
 `
@@ -96,7 +96,36 @@ func parseFlags(args []string) (config, error) {
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
+	if err := validate(cfg, fs.Args()); err != nil {
+		fmt.Fprintln(os.Stderr, "spacelift-notifier:", err)
+		return config{}, err
+	}
 	return cfg, nil
+}
+
+// minInterval is the shortest poll interval accepted. Anything shorter
+// (including zero or negative, which time.Timer treats as "fire now")
+// would poll Spacelift in a tight loop.
+const minInterval = time.Second
+
+// validate rejects flag values that would make the watch loop misbehave,
+// and stray positional arguments: the flag package stops parsing at the
+// first non-flag, so "spacelift-notifier foo --once" would otherwise
+// silently ignore --once.
+func validate(cfg config, positional []string) error {
+	if len(positional) > 0 {
+		return fmt.Errorf("unexpected argument %q (see --help)", positional[0])
+	}
+	if cfg.activeInterval < minInterval {
+		return fmt.Errorf("--interval must be at least %s, got %s", minInterval, cfg.activeInterval)
+	}
+	if cfg.idleInterval < minInterval {
+		return fmt.Errorf("--idle-interval must be at least %s, got %s", minInterval, cfg.idleInterval)
+	}
+	if cfg.requestBudget < 1 {
+		return fmt.Errorf("--request-budget must be at least 1, got %d", cfg.requestBudget)
+	}
+	return nil
 }
 
 func main() {

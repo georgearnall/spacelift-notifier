@@ -146,3 +146,22 @@ func TestSave_WritesAtomically(t *testing.T) {
 		t.Errorf("leftover temp files after Save(): %v", matches)
 	}
 }
+
+func TestUseLabels_ChangeResetsToColdStart(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s := New()
+	s.UseLabels([]string{"folder:owning-team/a", "folder:collab-team/a"})
+	s.Observe([]string{"r1"}, t0)
+
+	// Same labels in a different order: state is kept, r2 is newly pending.
+	s.UseLabels([]string{"folder:collab-team/a", "folder:owning-team/a"})
+	if newly := s.Observe([]string{"r1", "r2"}, t0.Add(time.Minute)); len(newly) != 1 || newly[0] != "r2" {
+		t.Errorf("Observe() with unchanged labels = %v, want [r2]", newly)
+	}
+
+	// Switching team: runs already pending for the new team aren't announced.
+	s.UseLabels([]string{"folder:owning-team/b", "folder:collab-team/b"})
+	if newly := s.Observe([]string{"r3", "r4"}, t0.Add(2*time.Minute)); len(newly) != 0 {
+		t.Errorf("Observe() after a label change = %v, want none (cold start)", newly)
+	}
+}

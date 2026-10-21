@@ -42,3 +42,17 @@ func TestReadKeys_NonTerminalNeverSends(t *testing.T) {
 	}
 	restore() // must be a safe no-op when stdin was never put into raw mode
 }
+
+func TestDecodeKeys_SplitsMultipleKeysInOneRead(t *testing.T) {
+	in := []byte{0x1b, '[', 'B', 0x1b, '[', 'B', 'x', 0x1b, '[', 'Z', '\r', 'q'}
+	want := []key{keyDown, keyDown, keyEnter, keyQuit}
+	got := decodeKeys(in)
+	if len(got) != len(want) {
+		t.Fatalf("decodeKeys() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("decodeKeys()[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+}

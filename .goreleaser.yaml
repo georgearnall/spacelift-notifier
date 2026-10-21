@@ -27,7 +27,9 @@ release:
   mode: keep-existing
 
 homebrew_casks:
-  - repository:
+  - # Don't publish prerelease tags (e.g. v1.2.0-rc.1) as the stable cask.
+    skip_upload: auto
+    repository:
       owner: georgearnall
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
