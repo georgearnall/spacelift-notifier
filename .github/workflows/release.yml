@@ -3,11 +3,16 @@ name: release
 on:
   push:
     tags:
-      - "v*"
-      - "[0-9]*"
+      - "v*.*.*"
 
 permissions:
   contents: write
+
+# Serialize releases so two tags pushed together can't race to update the
+# tap cask.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   goreleaser:
