@@ -17,6 +17,14 @@ brew install georgearnall/tap/spacelift-notifier
 If Homebrew refuses with `Refusing to load formula ... from untrusted tap`,
 trust the tap first: `brew trust georgearnall/tap`.
 
+If you installed v0.1.0 (built from source as a formula), switch to the
+prebuilt cask with:
+
+```
+brew uninstall spacelift-notifier
+brew install --cask georgearnall/tap/spacelift-notifier
+```
+
 ## Usage
 
 ```
@@ -71,3 +79,12 @@ account/profile is active before running this tool.
 Spacelift's GraphQL API does not expose rate-limit headers, so this tool
 tracks and displays its own request count and self-imposed budget
 (`--request-budget`, default 300/hour) rather than a server-reported quota.
+
+## Releasing
+
+Push a semver tag (`git tag v0.3.0 && git push origin v0.3.0`). The release
+workflow runs the tests, builds darwin/linux binaries with GoReleaser, attaches
+them to a GitHub release and pushes an updated cask to
+[georgearnall/homebrew-tap](https://github.com/georgearnall/homebrew-tap).
+It needs a `HOMEBREW_TAP_GITHUB_TOKEN` secret with contents write access to
+that tap repo.
