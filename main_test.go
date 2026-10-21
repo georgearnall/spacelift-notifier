@@ -127,3 +127,10 @@ func TestParseFlags_AcceptsMinimumValues(t *testing.T) {
 		t.Errorf("parseFlags() error = %v, want nil", err)
 	}
 }
+
+func TestParseFlags_Version(t *testing.T) {
+	cfg, err := parseFlags([]string{"--version"})
+	if err != nil || !cfg.showVersion {
+		t.Errorf("parseFlags([--version]) = %+v, %v; want showVersion", cfg, err)
+	}
+}

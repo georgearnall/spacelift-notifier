@@ -39,10 +39,14 @@ Flags:
                             just ones from your commits (toggle with a)
   --once                    Run a single poll cycle, print results, and exit
   --no-notify               Suppress desktop notifications
+  --version                 Print the version and exit
   -h, --help                Show this help text
 
 spacewatch never calls a Spacelift mutation - it only reads and links.
 `
+
+// version is set at release time via -ldflags "-X main.version=...".
+var version = "dev"
 
 // stringList is a repeatable flag.Value that replaces its default contents
 // the first time the user supplies a value, rather than appending to it.
@@ -76,6 +80,7 @@ type config struct {
 	once           bool
 	noNotify       bool
 	all            bool
+	showVersion    bool
 }
 
 // parseFlags builds the default config and applies args on top of it.
@@ -100,6 +105,7 @@ func parseFlags(args []string) (config, error) {
 	fs.DurationVar(&cfg.remind, "remind", cfg.remind, "re-notify about runs still pending after this long; 0 disables")
 	fs.BoolVar(&cfg.all, "all", false, "show every team run, not just yours")
 	fs.BoolVar(&cfg.once, "once", false, "run a single poll cycle and exit")
+	fs.BoolVar(&cfg.showVersion, "version", false, "print the version and exit")
 	fs.BoolVar(&cfg.noNotify, "no-notify", false, "suppress desktop notifications")
 
 	if err := fs.Parse(args); err != nil {
@@ -147,6 +153,10 @@ func main() {
 			os.Exit(0)
 		}
 		os.Exit(2)
+	}
+	if cfg.showVersion {
+		fmt.Println("spacewatch", version)
+		return
 	}
 
 	if err := resolveTeamLabels(&cfg, promptForTeam); err != nil {
