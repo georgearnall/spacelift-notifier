@@ -48,20 +48,18 @@ func readKeys(done <-chan struct{}) (<-chan key, func()) {
 	restore := func() { term.Restore(fd, oldState) }
 
 	go func() {
-		buf := make([]byte, 3)
+		buf := make([]byte, 64)
 		for {
 			n, err := os.Stdin.Read(buf)
 			if err != nil || n == 0 {
 				return
 			}
-			k := decodeKey(buf[:n])
-			if k == keyNone {
-				continue
-			}
-			select {
-			case ch <- k:
-			case <-done:
-				return
+			for _, k := range decodeKeys(buf[:n]) {
+				select {
+				case ch <- k:
+				case <-done:
+					return
+				}
 			}
 		}
 	}()
@@ -75,6 +73,25 @@ func readKeys(done <-chan struct{}) (<-chan key, func()) {
 // first entering raw mode.
 func reenterRawMode() {
 	term.MakeRaw(int(os.Stdin.Fd()))
+}
+
+// decodeKeys splits one read's worth of input into keypresses and decodes
+// each, dropping unrecognized ones. A single read can hold several keys
+// when they're typed or auto-repeated quickly (e.g. two arrow presses
+// arrive as one 6-byte read).
+func decodeKeys(b []byte) []key {
+	var keys []key
+	for len(b) > 0 {
+		n := 1
+		if b[0] == 0x1b && len(b) >= 3 && b[1] == '[' {
+			n = 3 // CSI sequence such as an arrow key
+		}
+		if k := decodeKey(b[:n]); k != keyNone {
+			keys = append(keys, k)
+		}
+		b = b[n:]
+	}
+	return keys
 }
 
 func decodeKey(b []byte) key {
