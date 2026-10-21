@@ -166,7 +166,7 @@ func notifyNewlyPending(n *notify.Notifier, res pollResult) {
 		if !ok {
 			continue
 		}
-		if err := n.PendingConfirmation(it.StackName, it.Title); err != nil {
+		if err := n.PendingConfirmation(it.StackName, it.Title, it.RunURL); err != nil {
 			fmt.Fprintln(os.Stderr, "spacewatch: notify:", err)
 		}
 	}
@@ -175,7 +175,7 @@ func notifyNewlyPending(n *notify.Notifier, res pollResult) {
 		if !ok {
 			continue
 		}
-		if err := n.StillPending(it.StackName, it.Title, ui.FormatAge(time.Since(it.CreatedAt))); err != nil {
+		if err := n.StillPending(it.StackName, it.Title, ui.FormatAge(time.Since(it.CreatedAt)), it.RunURL); err != nil {
 			fmt.Fprintln(os.Stderr, "spacewatch: notify:", err)
 		}
 	}

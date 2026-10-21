@@ -20,7 +20,7 @@ func TestSend_OSC9ForKnownTerminal(t *testing.T) {
 		},
 	}
 
-	if err := n.Send("title", "body"); err != nil {
+	if err := n.Send("title", "body", ""); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
 	if osaCalled {
@@ -43,7 +43,7 @@ func TestSend_FallsBackToOSAScriptForUnknownTerminal(t *testing.T) {
 		},
 	}
 
-	if err := n.Send("Spacelift: pending confirmation", "my-stack - apply"); err != nil {
+	if err := n.Send("Spacelift: pending confirmation", "my-stack - apply", ""); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
 	if !strings.Contains(gotScript, `"my-stack - apply"`) || !strings.Contains(gotScript, `"Spacelift: pending confirmation"`) {
@@ -60,7 +60,7 @@ func TestSend_PropagatesOSAScriptError(t *testing.T) {
 			return errors.New("osascript not found")
 		},
 	}
-	if err := n.Send("t", "b"); err == nil {
+	if err := n.Send("t", "b", ""); err == nil {
 		t.Fatal("Send() error = nil, want the osascript error to propagate")
 	}
 }
@@ -77,14 +77,14 @@ func TestPendingConfirmation_ComposesBody(t *testing.T) {
 		},
 	}
 
-	if err := n.PendingConfirmation("orders-api", "apply main"); err != nil {
+	if err := n.PendingConfirmation("orders-api", "apply main", ""); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(gotScript, "orders-api - apply main") {
 		t.Errorf("script = %q, want body to combine stack and run title", gotScript)
 	}
 
-	if err := n.PendingConfirmation("orders-api", ""); err != nil {
+	if err := n.PendingConfirmation("orders-api", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(gotScript, `"orders-api"`) {
@@ -117,7 +117,7 @@ func TestSend_UsesNotifySendOnLinux(t *testing.T) {
 			return nil
 		},
 	}
-	if err := n.Send("title", "body"); err != nil {
+	if err := n.Send("title", "body", ""); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
 	if gotName != "notify-send" || strings.Join(gotArgs, "|") != "--|title|body" {
@@ -132,7 +132,50 @@ func TestSend_UnsupportedOSReturnsError(t *testing.T) {
 		GOOS:        "windows",
 		Run:         func(string, ...string) error { t.Fatal("Run called on unsupported OS"); return nil },
 	}
-	if err := n.Send("t", "b"); err == nil {
+	if err := n.Send("t", "b", ""); err == nil {
 		t.Fatal("Send() error = nil, want an unsupported-OS error")
+	}
+}
+
+func TestSend_PrefersTerminalNotifierOnMac(t *testing.T) {
+	var out bytes.Buffer
+	var gotName string
+	var gotArgs []string
+	n := &Notifier{
+		Stdout:      &out,
+		TermProgram: func() string { return "iTerm.app" }, // even OSC 9 terminals: their notifications can't open the run
+		GOOS:        "darwin",
+		LookPath:    func(string) (string, error) { return "/opt/homebrew/bin/terminal-notifier", nil },
+		Run: func(name string, args ...string) error {
+			gotName, gotArgs = name, args
+			return nil
+		},
+	}
+	if err := n.Send("title", "body", "https://example.test/run"); err != nil {
+		t.Fatal(err)
+	}
+	want := "-title|title|-message|body|-open|https://example.test/run|-group|https://example.test/run"
+	if gotName != "terminal-notifier" || strings.Join(gotArgs, "|") != want {
+		t.Errorf("Send() ran %q %q, want terminal-notifier with %s", gotName, gotArgs, want)
+	}
+	if out.Len() != 0 {
+		t.Errorf("Send() also wrote an OSC 9 sequence: %q", out.String())
+	}
+}
+
+func TestSend_TerminalNotifierMissingFallsBack(t *testing.T) {
+	var gotName string
+	n := &Notifier{
+		Stdout:      &bytes.Buffer{},
+		TermProgram: func() string { return "" },
+		GOOS:        "darwin",
+		LookPath:    func(string) (string, error) { return "", errors.New("not found") },
+		Run:         func(name string, _ ...string) error { gotName = name; return nil },
+	}
+	if err := n.Send("t", "b", "u"); err != nil {
+		t.Fatal(err)
+	}
+	if gotName != "osascript" {
+		t.Errorf("Send() ran %q, want the osascript fallback", gotName)
 	}
 }

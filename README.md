@@ -17,8 +17,11 @@ brew install georgearnall/tap/spacewatch
 If Homebrew refuses with `Refusing to load formula ... from untrusted tap`,
 trust the tap first: `brew trust georgearnall/tap`.
 
-On Linux, desktop notifications use `notify-send` and opening runs uses
-`xdg-open`, unless your terminal supports OSC 9 notifications.
+On macOS, install `terminal-notifier` (`brew install terminal-notifier`) so
+clicking a notification opens the run. Without it, notifications still
+appear but don't link anywhere. On Linux, desktop notifications use
+`notify-send` and opening runs uses `xdg-open`, unless your terminal
+supports OSC 9 notifications.
 
 ## Usage
 
