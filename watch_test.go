@@ -559,3 +559,11 @@ func TestNotifyNewlyPending_SendsReminders(t *testing.T) {
 		t.Errorf("sent = %v, want one reminder for orders-api at 20m", sent)
 	}
 }
+
+func TestFrame_OverwritesInPlace(t *testing.T) {
+	got := frame("one\ntwo\n")
+	want := "\x1b[H" + "one\x1b[K\n" + "two\x1b[K\n" + "\x1b[J"
+	if got != want {
+		t.Errorf("frame() = %q, want %q", got, want)
+	}
+}

@@ -24,14 +24,14 @@ const (
 	ansiAltScreenOn  = "\x1b[?1049h\x1b[H\x1b[?25l"
 	ansiAltScreenOff = "\x1b[?25h\x1b[?1049l"
 
-	// ansiClearScreen clears the entire screen and homes the cursor. A
-	// full clear (rather than just homing the cursor and overwriting)
-	// avoids ghosting: if a new frame is narrower or shorter than the
-	// previous one (e.g. the pending count just dropped to zero, or the
-	// terminal was resized), simply overwriting from the top leaves
-	// stale characters from the old, wider frame visible past the end of
-	// the new, shorter lines.
+	// ansiClearScreen clears the entire screen and homes the cursor. Only
+	// used after a resize, when lines may have wrapped differently; normal
+	// redraws overwrite in place (see frame) so the once-a-second
+	// countdown doesn't flicker.
 	ansiClearScreen = "\x1b[2J\x1b[H"
+	ansiHome        = "\x1b[H"
+	ansiClearEOL    = "\x1b[K"
+	ansiClearBelow  = "\x1b[J"
 
 	// lowBudgetFloor is the poll delay once the self-imposed request
 	// budget for the current hour has been used up.
@@ -241,6 +241,15 @@ func crlf(s string) string {
 
 // footer renders the status line. next is the delay actually scheduled
 // before the next poll; zero omits it (e.g. --once, where there is none).
+// frame turns rendered output into an in-place redraw: home the cursor,
+// clear the rest of each line as it's overwritten, and clear anything
+// below the last line. This avoids ghosting when a frame is narrower or
+// shorter than the previous one, without the flicker of clearing the
+// whole screen first.
+func frame(s string) string {
+	return ansiHome + strings.ReplaceAll(s, "\n", ansiClearEOL+"\n") + ansiClearBelow
+}
+
 func footer(res pollResult, cfg config, next time.Duration, quitHint string) string {
 	nextPoll := ""
 	if next > 0 {
@@ -318,13 +327,13 @@ func runWatch(cfg config) {
 		last      pollResult
 		viewer    string
 		showAll   = cfg.all
-		selected  int
-		nextDelay time.Duration // what poll() last scheduled, shown in the footer
+		selected   int
+		nextPollAt time.Time // when the scheduled poll fires, for the footer countdown
+		fullClear  bool      // clear the whole screen on the next redraw (after a resize)
 	)
 
 	redraw := func() {
 		var b strings.Builder
-		b.WriteString(ansiClearScreen)
 		switch {
 		case last.reloginErr != nil:
 			b.WriteString(ui.Style(fmt.Sprintf("spacewatch: relogin failed: %v (press l to retry)\n\n", last.reloginErr), ui.BoldRed, colorEnabled))
@@ -334,14 +343,14 @@ func runWatch(cfg config) {
 			b.WriteString(ui.Style(fmt.Sprintf("spacewatch: poll error (retrying): %v\n\n", last.err), ui.BoldRed, colorEnabled))
 		}
 		b.WriteString(renderTable(visibleItems(last.items, viewer, showAll), showAll, "a", selected, linksSupported, colorEnabled))
-		quitHint := " · a to show all team runs · q to quit"
+		quitHint := " · r to refresh · a to show all team runs · q to quit"
 		if showAll {
-			quitHint = " · a to show only yours · q to quit"
+			quitHint = " · r to refresh · a to show only yours · q to quit"
 		}
 		if last.authExpired {
 			quitHint = " · l to relogin" + quitHint
 		}
-		b.WriteString(ui.Style(footer(last, cfg, nextDelay, quitHint), ui.Dim, colorEnabled))
+		b.WriteString(ui.Style(footer(last, cfg, max(time.Until(nextPollAt), 0), quitHint), ui.Dim, colorEnabled))
 		// readKeys puts the tty into raw mode, which on Unix also clears
 		// the OPOST output flag for the whole tty (stdin/stdout share
 		// one underlying device) - without it, a bare "\n" no longer
@@ -349,7 +358,12 @@ func runWatch(cfg config) {
 		// continues from whatever column the previous line ended at
 		// instead of resetting to column 0. Normalize to "\r\n" so this
 		// renders correctly regardless of OPOST state.
-		fmt.Print(crlf(b.String()))
+		out := frame(b.String())
+		if fullClear {
+			out = ansiClearScreen + out
+			fullClear = false
+		}
+		fmt.Print(crlf(out))
 	}
 
 	clampSelection := func() {
@@ -375,16 +389,19 @@ func runWatch(cfg config) {
 			}
 		}
 		clampSelection()
-		nextDelay = nextInterval(cfg, len(visibleItems(last.items, viewer, showAll)), last.reqWindow)
+		nextDelay := nextInterval(cfg, len(visibleItems(last.items, viewer, showAll)), last.reqWindow)
 		if last.err != nil && nextDelay < cfg.idleInterval {
 			nextDelay = cfg.idleInterval // back off on any poll error rather than hammering a failing API
 		}
+		nextPollAt = time.Now().Add(nextDelay)
 		redraw()
 		return nextDelay
 	}
 
 	timer := time.NewTimer(0) // fire immediately for the first poll
 	defer timer.Stop()
+	countdown := time.NewTicker(time.Second)
+	defer countdown.Stop()
 
 	for {
 		select {
@@ -408,6 +425,8 @@ func runWatch(cfg config) {
 				if view := visibleItems(last.items, viewer, showAll); selected >= 0 && selected < len(view) {
 					openURL(view[selected].RunURL)
 				}
+			case keyRefresh:
+				timer.Reset(0)
 			case keyToggleAll:
 				showAll = !showAll
 				clampSelection()
@@ -424,7 +443,12 @@ func runWatch(cfg config) {
 					redraw()
 				}
 			}
+		case <-countdown.C:
+			if !last.polledAt.IsZero() {
+				redraw()
+			}
 		case <-resized:
+			fullClear = true
 			redraw()
 		case <-sig:
 			return // let the deferred restoreTerminal/ansiAltScreenOff run before exiting
