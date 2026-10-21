@@ -96,7 +96,36 @@ func parseFlags(args []string) (config, error) {
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
+	if err := validate(cfg, fs.Args()); err != nil {
+		fmt.Fprintln(os.Stderr, "spacelift-notifier:", err)
+		return config{}, err
+	}
 	return cfg, nil
+}
+
+// minInterval is the shortest poll interval accepted. Anything shorter
+// (including zero or negative, which time.Timer treats as "fire now")
+// would poll Spacelift in a tight loop.
+const minInterval = time.Second
+
+// validate rejects flag values that would make the watch loop misbehave,
+// and stray positional arguments: the flag package stops parsing at the
+// first non-flag, so "spacelift-notifier foo --once" would otherwise
+// silently ignore --once.
+func validate(cfg config, positional []string) error {
+	if len(positional) > 0 {
+		return fmt.Errorf("unexpected argument %q (see --help)", positional[0])
+	}
+	if cfg.activeInterval < minInterval {
+		return fmt.Errorf("--interval must be at least %s, got %s", minInterval, cfg.activeInterval)
+	}
+	if cfg.idleInterval < minInterval {
+		return fmt.Errorf("--idle-interval must be at least %s, got %s", minInterval, cfg.idleInterval)
+	}
+	if cfg.requestBudget < 1 {
+		return fmt.Errorf("--request-budget must be at least 1, got %d", cfg.requestBudget)
+	}
+	return nil
 }
 
 func main() {

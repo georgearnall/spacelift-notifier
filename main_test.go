@@ -102,3 +102,27 @@ func TestParseFlags_UnknownFlagReturnsError(t *testing.T) {
 		t.Error("parseFlags() with an unknown flag: got nil error, want one")
 	}
 }
+
+func TestParseFlags_RejectsInvalidValues(t *testing.T) {
+	cases := [][]string{
+		{"--interval", "0"},
+		{"--interval", "-5s"},
+		{"--interval", "1ms"},
+		{"--idle-interval", "0"},
+		{"--request-budget", "0"},
+		{"--request-budget", "-1"},
+		{"extra-arg", "--once"},
+		{"--once", "extra-arg"},
+	}
+	for _, args := range cases {
+		if _, err := parseFlags(args); err == nil {
+			t.Errorf("parseFlags(%q): got nil error, want one", args)
+		}
+	}
+}
+
+func TestParseFlags_AcceptsMinimumValues(t *testing.T) {
+	if _, err := parseFlags([]string{"--interval", "1s", "--idle-interval", "1s", "--request-budget", "1"}); err != nil {
+		t.Errorf("parseFlags() error = %v, want nil", err)
+	}
+}
