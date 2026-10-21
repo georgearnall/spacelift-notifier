@@ -1,9 +1,9 @@
-# spacelift-notifier
+# spacewatch
 
-Watches a Spacelift account for stack runs awaiting confirmation, filtered to
-your team's stacks and to runs you actually have permission to confirm.
-Prints a clickable terminal link straight to the run so you can go confirm it
-in the browser.
+A watcher for [Spacelift](https://spacelift.io): watches your account for
+stack runs awaiting confirmation, filtered to your team's stacks and to runs
+you actually have permission to confirm. Prints a clickable terminal link
+straight to the run so you can go confirm it in the browser.
 
 Read-only: this tool never calls a Spacelift mutation. It only detects and
 links; you do the confirming.
@@ -11,30 +11,25 @@ links; you do the confirming.
 ## Installation
 
 ```
-brew install georgearnall/tap/spacelift-notifier
+brew install georgearnall/tap/spacewatch
 ```
 
 If Homebrew refuses with `Refusing to load formula ... from untrusted tap`,
 trust the tap first: `brew trust georgearnall/tap`.
 
-If you installed v0.1.0 (built from source as a formula), switch to the
-prebuilt cask with:
-
-```
-brew uninstall spacelift-notifier
-brew install --cask georgearnall/tap/spacelift-notifier
-```
+On Linux, desktop notifications use `notify-send` and opening runs uses
+`xdg-open`, unless your terminal supports OSC 9 notifications.
 
 ## Usage
 
 ```
-spacelift-notifier [flags]
+spacewatch [flags]
 ```
 
-See `spacelift-notifier --help` for the full flag list. Notably:
+See `spacewatch --help` for the full flag list. Notably:
 
 - `--team` - your Spacelift team name. Persisted to
-  `~/.config/spacelift-notifier/config.json` so you only enter it once, and
+  `~/.config/spacewatch/config.json` so you only enter it once, and
   used to watch both label conventions Spacelift has for team ownership:
   stacks your team *owns* (`folder:owning-team/<team>`) and stacks it
   *collaborates on* (`folder:collab-team/<team>`).
@@ -47,14 +42,14 @@ the tool prompts for your team name interactively the first time it runs,
 then remembers it for next time:
 
 ```
-$ spacelift-notifier --once
+$ spacewatch --once
 No team configured. Enter your Spacelift team name (used in folder:owning-team/<name> and folder:collab-team/<name> labels): ecommerce
 ```
 
 To change the stored team later, pass `--team` again:
 
 ```
-spacelift-notifier --team atlas
+spacewatch --team atlas
 ```
 
 ## Keyboard shortcuts (watch mode)
@@ -82,7 +77,7 @@ tracks and displays its own request count and self-imposed budget
 
 ## Releasing
 
-Push a semver tag (`git tag v0.3.0 && git push origin v0.3.0`). The release
+Push a semver tag (`git tag v1.2.3 && git push origin v1.2.3`). The release
 workflow runs the tests, builds darwin/linux binaries with GoReleaser, attaches
 them to a GitHub release and pushes an updated cask to
 [georgearnall/homebrew-tap](https://github.com/georgearnall/homebrew-tap).
