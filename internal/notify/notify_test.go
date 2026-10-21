@@ -13,7 +13,8 @@ func TestSend_OSC9ForKnownTerminal(t *testing.T) {
 	n := &Notifier{
 		Stdout:      &out,
 		TermProgram: func() string { return "iTerm.app" },
-		RunOSAScript: func(string) error {
+		GOOS:        "darwin",
+		Run: func(string, ...string) error {
 			osaCalled = true
 			return nil
 		},
@@ -35,8 +36,9 @@ func TestSend_FallsBackToOSAScriptForUnknownTerminal(t *testing.T) {
 	n := &Notifier{
 		Stdout:      &bytes.Buffer{},
 		TermProgram: func() string { return "Apple_Terminal" },
-		RunOSAScript: func(script string) error {
-			gotScript = script
+		GOOS:        "darwin",
+		Run: func(_ string, args ...string) error {
+			gotScript = args[len(args)-1]
 			return nil
 		},
 	}
@@ -53,7 +55,8 @@ func TestSend_PropagatesOSAScriptError(t *testing.T) {
 	n := &Notifier{
 		Stdout:      &bytes.Buffer{},
 		TermProgram: func() string { return "" },
-		RunOSAScript: func(string) error {
+		GOOS:        "darwin",
+		Run: func(string, ...string) error {
 			return errors.New("osascript not found")
 		},
 	}
@@ -67,8 +70,9 @@ func TestPendingConfirmation_ComposesBody(t *testing.T) {
 	n := &Notifier{
 		Stdout:      &bytes.Buffer{},
 		TermProgram: func() string { return "" },
-		RunOSAScript: func(script string) error {
-			gotScript = script
+		GOOS:        "darwin",
+		Run: func(_ string, args ...string) error {
+			gotScript = args[len(args)-1]
 			return nil
 		},
 	}
@@ -98,5 +102,37 @@ func TestQuote(t *testing.T) {
 		if got := quote(c.in); got != c.want {
 			t.Errorf("quote(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestSend_UsesNotifySendOnLinux(t *testing.T) {
+	var gotName string
+	var gotArgs []string
+	n := &Notifier{
+		Stdout:      &bytes.Buffer{},
+		TermProgram: func() string { return "" },
+		GOOS:        "linux",
+		Run: func(name string, args ...string) error {
+			gotName, gotArgs = name, args
+			return nil
+		},
+	}
+	if err := n.Send("title", "body"); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if gotName != "notify-send" || strings.Join(gotArgs, "|") != "--|title|body" {
+		t.Errorf("Send() ran %q %q, want notify-send -- title body", gotName, gotArgs)
+	}
+}
+
+func TestSend_UnsupportedOSReturnsError(t *testing.T) {
+	n := &Notifier{
+		Stdout:      &bytes.Buffer{},
+		TermProgram: func() string { return "" },
+		GOOS:        "windows",
+		Run:         func(string, ...string) error { t.Fatal("Run called on unsupported OS"); return nil },
+	}
+	if err := n.Send("t", "b"); err == nil {
+		t.Fatal("Send() error = nil, want an unsupported-OS error")
 	}
 }

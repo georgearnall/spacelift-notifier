@@ -1,6 +1,6 @@
 // Package notify sends a desktop notification when a new run starts
 // pending confirmation, using an OSC 9 terminal escape sequence where
-// supported, falling back to macOS's osascript elsewhere.
+// supported, falling back to osascript on macOS and notify-send on Linux.
 package notify
 
 import (
@@ -8,26 +8,29 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 )
 
 // Notifier sends desktop notifications. The zero value is not usable;
 // construct one with New(). Fields are exported so tests can substitute
-// the output writer, the terminal-detection function, and the osascript
-// runner.
+// the output writer, the terminal-detection function, the OS, and the
+// command runner used for the non-OSC fallback.
 type Notifier struct {
-	Stdout       io.Writer
-	TermProgram  func() string
-	RunOSAScript func(script string) error
+	Stdout      io.Writer
+	TermProgram func() string
+	GOOS        string
+	Run         func(name string, args ...string) error
 }
 
-// New returns a Notifier wired up to the real terminal and osascript.
+// New returns a Notifier wired up to the real terminal and OS.
 func New() *Notifier {
 	return &Notifier{
 		Stdout:      os.Stdout,
 		TermProgram: func() string { return os.Getenv("TERM_PROGRAM") },
-		RunOSAScript: func(script string) error {
-			return exec.Command("osascript", "-e", script).Run()
+		GOOS:        runtime.GOOS,
+		Run: func(name string, args ...string) error {
+			return exec.Command(name, args...).Run()
 		},
 	}
 }
@@ -46,8 +49,16 @@ func (n *Notifier) Send(title, body string) error {
 		fmt.Fprintf(n.Stdout, "\x1b]9;%s: %s\x1b\\", title, body)
 		return nil
 	}
-	script := fmt.Sprintf("display notification %s with title %s", quote(body), quote(title))
-	return n.RunOSAScript(script)
+	switch n.GOOS {
+	case "darwin":
+		script := fmt.Sprintf("display notification %s with title %s", quote(body), quote(title))
+		return n.Run("osascript", "-e", script)
+	case "linux":
+		// "--" so a title starting with "-" isn't parsed as an option.
+		return n.Run("notify-send", "--", title, body)
+	default:
+		return fmt.Errorf("desktop notifications aren't supported on %s outside an OSC 9 terminal", n.GOOS)
+	}
 }
 
 // PendingConfirmation sends a notification for a run that just started

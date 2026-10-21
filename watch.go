@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -474,7 +475,16 @@ var afterSignalRegistered = func() {}
 // openURL's behavior can be verified without actually launching a
 // browser.
 var runOpen = func(url string) error {
-	return exec.Command("open", url).Start()
+	return exec.Command(openCommand(runtime.GOOS), url).Start()
+}
+
+// openCommand returns the command that opens a URL in the default browser
+// on goos.
+func openCommand(goos string) string {
+	if goos == "darwin" {
+		return "open"
+	}
+	return "xdg-open"
 }
 
 // openURL opens a URL in the user's default browser. Used as the

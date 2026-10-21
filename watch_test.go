@@ -84,8 +84,9 @@ func testNotifier(t *testing.T, sent *[]string) *notify.Notifier {
 	return &notify.Notifier{
 		Stdout:      &bytes.Buffer{},
 		TermProgram: func() string { return "" },
-		RunOSAScript: func(script string) error {
-			*sent = append(*sent, script)
+		GOOS:        "darwin",
+		Run: func(_ string, args ...string) error {
+			*sent = append(*sent, args[len(args)-1])
 			return nil
 		},
 	}
@@ -501,5 +502,14 @@ func TestFooter_ContainsKeyStats(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("footer() = %q, missing %q", got, want)
 		}
+	}
+}
+
+func TestOpenCommand(t *testing.T) {
+	if got := openCommand("darwin"); got != "open" {
+		t.Errorf("openCommand(darwin) = %q, want open", got)
+	}
+	if got := openCommand("linux"); got != "xdg-open" {
+		t.Errorf("openCommand(linux) = %q, want xdg-open", got)
 	}
 }
