@@ -75,6 +75,22 @@ func (n *Notifier) Send(title, body, url string) error {
 	}
 }
 
+// Method describes how Send will deliver notifications, for display.
+func (n *Notifier) Method() string {
+	switch {
+	case n.hasTerminalNotifier():
+		return "terminal-notifier"
+	case oscCapableTerminals[n.TermProgram()]:
+		return "terminal (OSC 9)"
+	case n.GOOS == "darwin":
+		return "osascript (install terminal-notifier to click through)"
+	case n.GOOS == "linux":
+		return "notify-send"
+	default:
+		return "unsupported"
+	}
+}
+
 func (n *Notifier) hasTerminalNotifier() bool {
 	if n.GOOS != "darwin" || n.LookPath == nil {
 		return false

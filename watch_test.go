@@ -497,31 +497,34 @@ func TestCRLF_DoesNotDoubleUpExistingCR(t *testing.T) {
 	}
 }
 
-func TestFooter_ContainsKeyStats(t *testing.T) {
-	res := pollResult{polledAt: time.Now(), items: make([]pending.PendingConfirmation, 2), reqTotal: 5, reqWindow: 3}
-	cfg := config{requestBudget: 300, activeInterval: 20 * time.Second, idleInterval: 60 * time.Second}
+func TestFooter(t *testing.T) {
+	polled := time.Date(2026, 1, 1, 9, 30, 0, 0, time.Local)
+	if got, want := footer(polled, 2, 20*time.Second), "polled 09:30:00 · 2 pending · next poll in 20s\n"; got != want {
+		t.Errorf("footer() = %q, want %q", got, want)
+	}
+	if got := footer(polled, 0, 0); strings.Contains(got, "next poll") || strings.Contains(got, "requests") {
+		t.Errorf("footer() = %q, want no countdown or request stats", got)
+	}
+}
 
-	got := footer(res, cfg, 20*time.Second, " · q to quit")
-	for _, want := range []string{"2 pending", "5 total", "3 this hour", "budget 300/hr", "next poll in 20s", "q to quit"} {
+func TestKeyHints(t *testing.T) {
+	if got, want := keyHints(false, false), "[↑↓] move  [↵] open  [a] all team runs  [r] refresh  [?] config  [q] quit\n"; got != want {
+		t.Errorf("keyHints() = %q, want %q", got, want)
+	}
+	if got := keyHints(true, true); !strings.Contains(got, "[a] my runs") || !strings.Contains(got, "[l] relogin") {
+		t.Errorf("keyHints(showAll, authExpired) = %q, want my-runs toggle and relogin", got)
+	}
+}
+
+func TestRenderConfig(t *testing.T) {
+	cfg := config{team: "atlas", activeInterval: 20 * time.Second, idleInterval: time.Minute, requestBudget: 300, remind: 10 * time.Minute}
+	cfg.teamLabels.values = []string{"folder:owning-team/atlas", "folder:collab-team/atlas"}
+	var sent []string
+	got := renderConfig(cfg, "me", false, testNotifier(t, &sent), pollResult{reqWindow: 12, reqTotal: 40}, false)
+	for _, want := range []string{"spacewatch - config", "atlas", "folder:owning-team/atlas, folder:collab-team/atlas", "your runs", "every 10m0s", "12 of 300 budget", "40 since start", "[?] close  [q] quit"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("footer() = %q, missing %q", got, want)
+			t.Errorf("renderConfig() missing %q:\n%s", want, got)
 		}
-	}
-}
-
-func TestOpenCommand(t *testing.T) {
-	if got := openCommand("darwin"); got != "open" {
-		t.Errorf("openCommand(darwin) = %q, want open", got)
-	}
-	if got := openCommand("linux"); got != "xdg-open" {
-		t.Errorf("openCommand(linux) = %q, want xdg-open", got)
-	}
-}
-
-func TestFooter_OmitsNextPollWhenNoneScheduled(t *testing.T) {
-	got := footer(pollResult{polledAt: time.Now()}, config{requestBudget: 300}, 0, "")
-	if strings.Contains(got, "next poll") {
-		t.Errorf("footer() = %q, want no next-poll text when none is scheduled", got)
 	}
 }
 

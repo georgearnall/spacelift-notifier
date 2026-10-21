@@ -239,8 +239,91 @@ func crlf(s string) string {
 	return b.String()
 }
 
-// footer renders the status line. next is the delay actually scheduled
-// before the next poll; zero omits it (e.g. --once, where there is none).
+// footer renders the status line: when the last poll ran, how many runs
+// are shown, and the time until the next poll. next <= 0 omits the
+// countdown (e.g. --once, where there is no next poll).
+func footer(polledAt time.Time, shown int, next time.Duration) string {
+	line := fmt.Sprintf("polled %s · %d pending", polledAt.Format("15:04:05"), shown)
+	if next > 0 {
+		line += " · next poll in " + next.Round(time.Second).String()
+	}
+	return line + "\n"
+}
+
+// keyHints renders the watch-mode key legend, in the same bracketed layout
+// as gh-monitor.
+func keyHints(showAll, authExpired bool) string {
+	toggle := "[a] all team runs"
+	if showAll {
+		toggle = "[a] my runs"
+	}
+	hints := "[↑↓] move  [↵] open  " + toggle + "  [r] refresh  "
+	if authExpired {
+		hints += "[l] relogin  "
+	}
+	return hints + "[?] config  [q] quit\n"
+}
+
+// viewTitle is the bold header line, naming the active view.
+func viewTitle(showAll bool) string {
+	if showAll {
+		return "spacewatch · all team runs"
+	}
+	return "spacewatch · your runs"
+}
+
+// renderConfig renders the ? pane, which replaces the main view while
+// open: the effective settings, and the request budget usage that used to
+// clutter the main footer.
+func renderConfig(cfg config, viewer string, showAll bool, notifier *notify.Notifier, res pollResult, colorEnabled bool) string {
+	dim := func(s string) string { return ui.Style(s, ui.Dim, colorEnabled) }
+	view := "your runs"
+	if showAll {
+		view = "all team runs"
+	}
+	remind := "off"
+	if cfg.remind > 0 {
+		remind = "every " + cfg.remind.String()
+	}
+	notifications := notifier.Method()
+	if cfg.noNotify {
+		notifications = "off (--no-notify)"
+	}
+	team := cfg.team
+	if team == "" {
+		team = "(custom --team-label)"
+	}
+
+	const width = len("Notifications") // longest label, so both sections align
+	section := func(b *strings.Builder, title string, rows [][2]string) {
+		b.WriteString(dim(title) + "\n")
+		for _, r := range rows {
+			b.WriteString("  " + dim(fmt.Sprintf("%-*s", width, r[0])) + "  " + r[1] + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	var b strings.Builder
+	b.WriteString(ui.Style("spacewatch", ui.Bold, colorEnabled) + " - config\n\n")
+	section(&b, "SETTINGS", [][2]string{
+		{"Viewer", viewer},
+		{"Team", team},
+		{"Labels", strings.Join(cfg.teamLabels.values, ", ")},
+		{"View", view},
+		{"Active poll", cfg.activeInterval.String()},
+		{"Idle poll", cfg.idleInterval.String()},
+		{"Reminders", remind},
+		{"Notifications", notifications},
+		{"Version", version},
+	})
+	section(&b, "REQUESTS", [][2]string{
+		{"This hour", fmt.Sprintf("%d of %d budget", res.reqWindow, cfg.requestBudget)},
+		{"Total", fmt.Sprintf("%d since start", res.reqTotal)},
+	})
+	b.WriteString(dim("[?] close  [q] quit") + "\n")
+	return b.String()
+}
+
 // frame turns rendered output into an in-place redraw: home the cursor,
 // clear the rest of each line as it's overwritten, and clear anything
 // below the last line. This avoids ghosting when a frame is narrower or
@@ -248,15 +331,6 @@ func crlf(s string) string {
 // whole screen first.
 func frame(s string) string {
 	return ansiHome + strings.ReplaceAll(s, "\n", ansiClearEOL+"\n") + ansiClearBelow
-}
-
-func footer(res pollResult, cfg config, next time.Duration, quitHint string) string {
-	nextPoll := ""
-	if next > 0 {
-		nextPoll = " · next poll in " + next.Round(time.Second).String()
-	}
-	return fmt.Sprintf("polled %s · %d pending · requests: %d total, %d this hour (budget %d/hr)%s%s\n",
-		res.polledAt.Format("15:04:05"), len(res.items), res.reqTotal, res.reqWindow, cfg.requestBudget, nextPoll, quitHint)
 }
 
 func runOnce(cfg config) {
@@ -288,7 +362,7 @@ func runOnce(cfg config) {
 	linksSupported := ui.SupportsLinks()
 	colorEnabled := ui.ColorEnabled()
 	fmt.Print(renderTable(res.items, cfg.all, "--all", -1, linksSupported, colorEnabled))
-	fmt.Print(ui.Style(footer(res, cfg, 0, ""), ui.Dim, colorEnabled))
+	fmt.Print(ui.Style(footer(res.polledAt, len(res.items), 0), ui.Dim, colorEnabled))
 }
 
 func runWatch(cfg config) {
@@ -324,33 +398,37 @@ func runWatch(cfg config) {
 	defer signal.Stop(sig)
 
 	var (
-		last      pollResult
-		viewer    string
-		showAll   = cfg.all
+		last       pollResult
+		viewer     string
+		showAll    = cfg.all
 		selected   int
 		nextPollAt time.Time // when the scheduled poll fires, for the footer countdown
 		fullClear  bool      // clear the whole screen on the next redraw (after a resize)
+		configOpen bool      // the ? pane is showing instead of the main view
 	)
 
 	redraw := func() {
 		var b strings.Builder
-		switch {
-		case last.reloginErr != nil:
-			b.WriteString(ui.Style(fmt.Sprintf("spacewatch: relogin failed: %v (press l to retry)\n\n", last.reloginErr), ui.BoldRed, colorEnabled))
-		case last.authExpired:
-			b.WriteString(ui.Style("spacewatch: session expired - press l to relogin\n\n", ui.BoldRed, colorEnabled))
-		case last.err != nil:
-			b.WriteString(ui.Style(fmt.Sprintf("spacewatch: poll error (retrying): %v\n\n", last.err), ui.BoldRed, colorEnabled))
+		if configOpen {
+			b.WriteString(renderConfig(cfg, viewer, showAll, notifier, last, colorEnabled))
+		} else {
+			view := visibleItems(last.items, viewer, showAll)
+			b.WriteString(ui.Style(viewTitle(showAll), ui.Bold, colorEnabled) + "\n\n")
+			switch {
+			case last.reloginErr != nil:
+				b.WriteString(ui.Style(fmt.Sprintf("spacewatch: relogin failed: %v (press l to retry)\n\n", last.reloginErr), ui.BoldRed, colorEnabled))
+			case last.authExpired:
+				b.WriteString(ui.Style("spacewatch: session expired - press l to relogin\n\n", ui.BoldRed, colorEnabled))
+			case last.err != nil:
+				b.WriteString(ui.Style(fmt.Sprintf("spacewatch: poll error (retrying): %v\n\n", last.err), ui.BoldRed, colorEnabled))
+			}
+			b.WriteString(renderTable(view, showAll, "a", selected, linksSupported, colorEnabled))
+			b.WriteString("\n")
+			b.WriteString(ui.Style(keyHints(showAll, last.authExpired), ui.Dim, colorEnabled))
+			if !last.polledAt.IsZero() {
+				b.WriteString(ui.Style(footer(last.polledAt, len(view), max(time.Until(nextPollAt), 0)), ui.Dim, colorEnabled))
+			}
 		}
-		b.WriteString(renderTable(visibleItems(last.items, viewer, showAll), showAll, "a", selected, linksSupported, colorEnabled))
-		quitHint := " · r to refresh · a to show all team runs · q to quit"
-		if showAll {
-			quitHint = " · r to refresh · a to show only yours · q to quit"
-		}
-		if last.authExpired {
-			quitHint = " · l to relogin" + quitHint
-		}
-		b.WriteString(ui.Style(footer(last, cfg, max(time.Until(nextPollAt), 0), quitHint), ui.Dim, colorEnabled))
 		// readKeys puts the tty into raw mode, which on Unix also clears
 		// the OPOST output flag for the whole tty (stdin/stdout share
 		// one underlying device) - without it, a bare "\n" no longer
@@ -408,9 +486,15 @@ func runWatch(cfg config) {
 		case <-timer.C:
 			timer.Reset(poll())
 		case k := <-keys:
+			if configOpen && k != keyQuit && k != keyConfig {
+				continue // the pane only responds to ? and q
+			}
 			switch k {
 			case keyQuit:
 				return
+			case keyConfig:
+				configOpen = !configOpen
+				redraw()
 			case keyUp:
 				if selected > 0 {
 					selected--
