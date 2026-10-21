@@ -1,0 +1,46 @@
+version: 2
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+archives:
+  - formats: [tar.gz]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github-native
+
+release:
+  mode: keep-existing
+
+homebrew_casks:
+  - repository:
+      owner: georgearnall
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/georgearnall/spacelift-notifier
+    description: Watch Spacelift for stack runs awaiting confirmation and link to them
+    commit_msg_template: "Update {{ .ProjectName }} to {{ .Tag }}"
+    # Binaries are unsigned, so strip the quarantine bit Homebrew applies to
+    # cask downloads or Gatekeeper refuses to run them. Emitted via
+    # custom_block because GoReleaser v2.18 only renders the legacy
+    # `postflight do` form, which Homebrew 7 deprecates.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/spacelift-notifier"]
+        end
+      end
