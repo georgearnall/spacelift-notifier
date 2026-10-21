@@ -18,6 +18,8 @@ type Row struct {
 	Team     string
 	Stack    string
 	Title    string
+	Plan     string // e.g. "+2 ~3 -1", or "" if unknown
+	Destroys bool   // the plan destroys at least one resource
 	Age      string
 	URL      string
 	Selected bool
@@ -50,14 +52,15 @@ func Style(s, code string, enabled bool) string {
 // RenderTable renders rows as an aligned table. When linksSupported is
 // true, the LINK column is an OSC 8 hyperlink; otherwise it falls back to
 // printing the raw URL so it can still be copied. When colorEnabled is
-// true, the header is bold, the TEAM column is cyan, the AGE column is
-// dim, and the selected row's marker is highlighted.
+// true, the header is bold, the TEAM column is cyan, the PLAN column is
+// red when the plan destroys anything, the AGE column is dim, and the
+// selected row's marker is highlighted.
 func RenderTable(rows []Row, linksSupported, colorEnabled bool) string {
 	if len(rows) == 0 {
 		return "no pending confirmations for your team\n"
 	}
 
-	headers := []string{"", "TEAM", "STACK", "TITLE", "AGE", "LINK"}
+	headers := []string{"", "TEAM", "STACK", "TITLE", "PLAN", "AGE", "LINK"}
 	widths := make([]int, len(headers))
 	for i, h := range headers {
 		widths[i] = len(h)
@@ -73,7 +76,7 @@ func RenderTable(rows []Row, linksSupported, colorEnabled bool) string {
 		if r.Selected {
 			marker = ">"
 		}
-		cells[i] = []string{marker, r.Team, r.Stack, truncate(r.Title, 60), r.Age, link}
+		cells[i] = []string{marker, r.Team, r.Stack, truncate(r.Title, 60), r.Plan, r.Age, link}
 		// The LINK column is last and never padded, so its width (which
 		// includes invisible escape bytes when hyperlinked) doesn't
 		// affect alignment of the columns before it.
@@ -120,7 +123,8 @@ func RenderTable(rows []Row, linksSupported, colorEnabled bool) string {
 	return b.String()
 }
 
-// styleCell applies per-column coloring: TEAM is cyan, AGE is dim, the
+// styleCell applies per-column coloring: TEAM is cyan, PLAN is red when it
+// destroys anything, AGE is dim, the
 // marker is highlighted when its row is selected, and the remaining
 // columns are bolded on the selected row for a full-row highlight.
 func styleCell(col int, s string, r Row, colorEnabled bool) string {
@@ -135,7 +139,12 @@ func styleCell(col int, s string, r Row, colorEnabled bool) string {
 		return s
 	case 1: // team
 		return Style(s, Cyan, true)
-	case 4: // age
+	case 4: // plan
+		if r.Destroys {
+			return Style(s, BoldRed, true)
+		}
+		return s
+	case 5: // age
 		return Style(s, Dim, true)
 	default:
 		if r.Selected {

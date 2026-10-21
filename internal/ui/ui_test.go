@@ -195,3 +195,20 @@ func TestEnvSupportsLinks(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderTable_PlanColumn(t *testing.T) {
+	rows := []Row{
+		{Team: "t", Stack: "safe", Title: "x", Plan: "+1 ~2 -0", Age: "1m", URL: "u"},
+		{Team: "t", Stack: "risky", Title: "x", Plan: "+0 ~0 -3", Destroys: true, Age: "1m", URL: "u"},
+	}
+	got := RenderTable(rows, false, true)
+	if !strings.Contains(got, "PLAN") || !strings.Contains(got, "+1 ~2 -0") {
+		t.Errorf("RenderTable() missing PLAN column: %q", got)
+	}
+	if !strings.Contains(got, BoldRed+"+0 ~0 -3") {
+		t.Errorf("RenderTable() did not highlight a destroying plan in red: %q", got)
+	}
+	if strings.Contains(got, BoldRed+"+1 ~2 -0") {
+		t.Errorf("RenderTable() highlighted a non-destroying plan: %q", got)
+	}
+}

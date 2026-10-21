@@ -141,10 +141,16 @@ func renderRows(items []pending.PendingConfirmation, selected int) []ui.Row {
 		if team == "" {
 			team = it.MatchedLabel
 		}
+		var plan string
+		if it.Plan != nil {
+			plan = fmt.Sprintf("+%d ~%d -%d", it.Plan.Add, it.Plan.Change, it.Plan.Delete)
+		}
 		rows[i] = ui.Row{
 			Team:     team,
 			Stack:    it.StackName,
 			Title:    it.Title,
+			Plan:     plan,
+			Destroys: it.Plan != nil && it.Plan.Delete > 0,
 			Age:      ui.FormatAge(now.Sub(it.CreatedAt)),
 			URL:      it.RunURL,
 			Selected: i == selected,
