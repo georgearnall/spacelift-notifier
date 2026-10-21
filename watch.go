@@ -153,7 +153,8 @@ func renderTable(items []pending.PendingConfirmation, showAll bool, toggleHint s
 // notifyNewlyPending sends a desktop notification for each run in
 // res.items that just started pending confirmation this poll cycle, and a
 // reminder for each that has been pending long enough to be due one.
-func notifyNewlyPending(n *notify.Notifier, res pollResult) {
+// sent is called with each run ID whose notification was delivered.
+func notifyNewlyPending(n *notify.Notifier, res pollResult, sent func(runID string)) {
 	if len(res.newlyPendingIDs) == 0 && len(res.remindIDs) == 0 {
 		return
 	}
@@ -168,7 +169,9 @@ func notifyNewlyPending(n *notify.Notifier, res pollResult) {
 		}
 		if err := n.PendingConfirmation(it.StackName, it.Title, it.RunURL); err != nil {
 			fmt.Fprintln(os.Stderr, "spacewatch: notify:", err)
+			continue
 		}
+		sent(id)
 	}
 	for _, id := range res.remindIDs {
 		it, ok := byID[id]
@@ -177,7 +180,9 @@ func notifyNewlyPending(n *notify.Notifier, res pollResult) {
 		}
 		if err := n.StillPending(it.StackName, it.Title, ui.FormatAge(time.Since(it.CreatedAt)), it.RunURL); err != nil {
 			fmt.Fprintln(os.Stderr, "spacewatch: notify:", err)
+			continue
 		}
+		sent(id)
 	}
 }
 
@@ -353,7 +358,7 @@ func runOnce(cfg config) {
 	res.items = visibleItems(res.items, viewer, cfg.all)
 
 	if !cfg.noNotify {
-		notifyNewlyPending(notify.New(), res)
+		notifyNewlyPending(notify.New(), res, func(id string) { st.MarkNotified(id, time.Now()) })
 	}
 	if err := st.Save(); err != nil {
 		fmt.Fprintln(os.Stderr, "spacewatch: saving state:", err)
@@ -460,7 +465,7 @@ func runWatch(cfg config) {
 			if !cfg.noNotify {
 				view := last
 				view.items = visibleItems(last.items, viewer, showAll)
-				notifyNewlyPending(notifier, view)
+				notifyNewlyPending(notifier, view, func(id string) { st.MarkNotified(id, time.Now()) })
 			}
 			if err := st.Save(); err != nil {
 				last.err = fmt.Errorf("saving state: %w", err)

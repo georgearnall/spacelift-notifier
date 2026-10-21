@@ -58,7 +58,6 @@ func (s *State) Observe(pendingIDs []string, now time.Time) (newlyPending []stri
 		}
 		next[id] = RunRecord{Seen: now}
 		if !coldStart {
-			next[id] = RunRecord{Seen: now, Notified: now}
 			newlyPending = append(newlyPending, id)
 		}
 	}
@@ -69,8 +68,10 @@ func (s *State) Observe(pendingIDs []string, now time.Time) (newlyPending []stri
 }
 
 // DueReminders returns the runs still pending whose last notification
-// (or first sighting, if never notified) is at least every ago, and marks
-// them notified as of now. every <= 0 disables reminders.
+// (or first sighting, if never notified) is at least every ago. It doesn't
+// change the state: call MarkNotified once a notification is actually
+// delivered, so skipped (--no-notify, hidden by the view) or failed sends
+// don't postpone the next reminder. every <= 0 disables reminders.
 func (s *State) DueReminders(now time.Time, every time.Duration) []string {
 	if every <= 0 {
 		return nil
@@ -82,13 +83,20 @@ func (s *State) DueReminders(now time.Time, every time.Duration) []string {
 			last = rec.Seen
 		}
 		if now.Sub(last) >= every {
-			rec.Notified = now
-			s.Runs[id] = rec
 			due = append(due, id)
 		}
 	}
 	slices.Sort(due)
 	return due
+}
+
+// MarkNotified records that the user was just notified about run id.
+// Unknown ids (no longer pending) are ignored.
+func (s *State) MarkNotified(id string, now time.Time) {
+	if rec, ok := s.Runs[id]; ok {
+		rec.Notified = now
+		s.Runs[id] = rec
+	}
 }
 
 // UseLabels records the team labels this state is tracking. If they differ

@@ -104,7 +104,7 @@ func TestNotifyNewlyPending(t *testing.T) {
 		newlyPendingIDs: []string{"r2", "does-not-exist"},
 	}
 
-	notifyNewlyPending(n, res)
+	notifyNewlyPending(n, res, func(string) {})
 
 	if len(sent) != 1 || !strings.Contains(sent[0], "billing-api") {
 		t.Errorf("sent notifications = %v, want exactly one for billing-api", sent)
@@ -115,7 +115,7 @@ func TestNotifyNewlyPending_NoneNewSendsNothing(t *testing.T) {
 	var sent []string
 	n := testNotifier(t, &sent)
 
-	notifyNewlyPending(n, pollResult{items: []pending.PendingConfirmation{{RunID: "r1"}}})
+	notifyNewlyPending(n, pollResult{items: []pending.PendingConfirmation{{RunID: "r1"}}}, func(string) {})
 	if len(sent) != 0 {
 		t.Errorf("notifyNewlyPending() sent %v when nothing was newly pending", sent)
 	}
@@ -557,7 +557,7 @@ func TestNotifyNewlyPending_SendsReminders(t *testing.T) {
 		items:     []pending.PendingConfirmation{{RunID: "r1", StackName: "orders-api", Title: "apply", CreatedAt: time.Now().Add(-20 * time.Minute)}},
 		remindIDs: []string{"r1", "not-visible"},
 	}
-	notifyNewlyPending(n, res)
+	notifyNewlyPending(n, res, func(string) {})
 	if len(sent) != 1 || !strings.Contains(sent[0], "still pending confirmation (20m)") {
 		t.Errorf("sent = %v, want one reminder for orders-api at 20m", sent)
 	}
@@ -568,5 +568,30 @@ func TestFrame_OverwritesInPlace(t *testing.T) {
 	want := "\x1b[H" + "one\x1b[K\n" + "two\x1b[K\n" + "\x1b[J"
 	if got != want {
 		t.Errorf("frame() = %q, want %q", got, want)
+	}
+}
+
+func TestNotifyNewlyPending_ReportsOnlyDeliveredRuns(t *testing.T) {
+	failing := &notify.Notifier{
+		Stdout:      &bytes.Buffer{},
+		TermProgram: func() string { return "" },
+		GOOS:        "darwin",
+		Run:         func(string, ...string) error { return errors.New("boom") },
+	}
+	res := pollResult{
+		items:           []pending.PendingConfirmation{{RunID: "r1"}, {RunID: "r2"}},
+		newlyPendingIDs: []string{"r1"},
+		remindIDs:       []string{"r2", "hidden"},
+	}
+	var delivered []string
+	notifyNewlyPending(failing, res, func(id string) { delivered = append(delivered, id) })
+	if len(delivered) != 0 {
+		t.Errorf("delivered = %v after failed sends, want none", delivered)
+	}
+
+	var sent []string
+	notifyNewlyPending(testNotifier(t, &sent), res, func(id string) { delivered = append(delivered, id) })
+	if strings.Join(delivered, ",") != "r1,r2" {
+		t.Errorf("delivered = %v, want [r1 r2] (hidden run not in items is skipped)", delivered)
 	}
 }

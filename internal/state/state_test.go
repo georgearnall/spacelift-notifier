@@ -170,7 +170,8 @@ func TestDueReminders(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := New()
 	s.Observe([]string{"cold"}, t0)                         // cold start: seen, never notified
-	s.Observe([]string{"cold", "new"}, t0.Add(time.Minute)) // "new" notified at t0+1m
+	s.Observe([]string{"cold", "new"}, t0.Add(time.Minute)) // newly pending, seen at t0+1m
+	s.MarkNotified("new", t0.Add(time.Minute))
 
 	if due := s.DueReminders(t0.Add(9*time.Minute), 10*time.Minute); len(due) != 0 {
 		t.Errorf("DueReminders() at 9m = %v, want none", due)
@@ -178,17 +179,23 @@ func TestDueReminders(t *testing.T) {
 	if due := s.DueReminders(t0.Add(10*time.Minute), 10*time.Minute); len(due) != 1 || due[0] != "cold" {
 		t.Errorf("DueReminders() at 10m = %v, want [cold] (seen 10m ago, never notified)", due)
 	}
-	if due := s.DueReminders(t0.Add(11*time.Minute), 10*time.Minute); len(due) != 1 || due[0] != "new" {
-		t.Errorf("DueReminders() at 11m = %v, want [new]", due)
+	// Not marked (e.g. --no-notify or a failed send), so still due a minute later.
+	if due := s.DueReminders(t0.Add(11*time.Minute), 10*time.Minute); len(due) != 2 {
+		t.Errorf("DueReminders() at 11m = %v, want [cold new]", due)
 	}
-	// Both were just reminded, so nothing is due until another 10m passes.
+	s.MarkNotified("cold", t0.Add(11*time.Minute))
+	s.MarkNotified("new", t0.Add(11*time.Minute))
 	if due := s.DueReminders(t0.Add(15*time.Minute), 10*time.Minute); len(due) != 0 {
-		t.Errorf("DueReminders() at 15m = %v, want none", due)
+		t.Errorf("DueReminders() at 15m after marking = %v, want none", due)
 	}
 	if due := s.DueReminders(t0.Add(21*time.Minute), 10*time.Minute); len(due) != 2 {
 		t.Errorf("DueReminders() at 21m = %v, want both again", due)
 	}
 	if due := s.DueReminders(t0.Add(time.Hour), 0); due != nil {
 		t.Errorf("DueReminders() with every=0 = %v, want disabled", due)
+	}
+	s.MarkNotified("gone", t0) // unknown run: ignored, not added
+	if _, ok := s.Runs["gone"]; ok {
+		t.Error("MarkNotified() added an unknown run")
 	}
 }
