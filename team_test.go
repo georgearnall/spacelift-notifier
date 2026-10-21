@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/georgearnall/spacelift-notifier/internal/teamconfig"
+	"github.com/georgearnall/spacewatch/internal/teamconfig"
 )
 
 func failIfCalled(t *testing.T) func() (string, error) {

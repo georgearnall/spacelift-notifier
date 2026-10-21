@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/georgearnall/spacelift-notifier/internal/labels"
-	"github.com/georgearnall/spacelift-notifier/internal/spaceclient"
+	"github.com/georgearnall/spacewatch/internal/labels"
+	"github.com/georgearnall/spacewatch/internal/spaceclient"
 	"github.com/spacelift-io/spacectl/client"
 	"github.com/spacelift-io/spacectl/client/session"
 )

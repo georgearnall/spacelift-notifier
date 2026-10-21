@@ -1,4 +1,4 @@
-// Command spacelift-notifier watches a Spacelift account for stack runs
+// Command spacewatch watches a Spacelift account for stack runs
 // awaiting confirmation, filtered to the caller's team and to runs the
 // caller actually has permission to confirm. It is read-only: it never
 // confirms, discards, or otherwise mutates anything in Spacelift. It only
@@ -13,10 +13,10 @@ import (
 	"time"
 )
 
-const helpText = `spacelift-notifier - watch Spacelift for stack runs awaiting confirmation
+const helpText = `spacewatch - watch Spacelift for stack runs awaiting confirmation
 
 Usage:
-  spacelift-notifier [flags]
+  spacewatch [flags]
 
 Flags:
   --team value              Your Spacelift team name. Persisted to config.json
@@ -37,7 +37,7 @@ Flags:
   --no-notify               Suppress desktop notifications
   -h, --help                Show this help text
 
-spacelift-notifier never calls a Spacelift mutation - it only reads and links.
+spacewatch never calls a Spacelift mutation - it only reads and links.
 `
 
 // stringList is a repeatable flag.Value that replaces its default contents
@@ -83,7 +83,7 @@ func parseFlags(args []string) (config, error) {
 		requestBudget:  300,
 	}
 
-	fs := flag.NewFlagSet("spacelift-notifier", flag.ContinueOnError)
+	fs := flag.NewFlagSet("spacewatch", flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, helpText) }
 	fs.StringVar(&cfg.team, "team", "", "your Spacelift team name (persisted; derives folder:owning-team/<name> and folder:collab-team/<name>)")
 	fs.Var(&cfg.teamLabels, "team-label", "exact stack label to match as 'your team' (repeatable; bypasses --team/config.json)")
@@ -97,7 +97,7 @@ func parseFlags(args []string) (config, error) {
 		return config{}, err
 	}
 	if err := validate(cfg, fs.Args()); err != nil {
-		fmt.Fprintln(os.Stderr, "spacelift-notifier:", err)
+		fmt.Fprintln(os.Stderr, "spacewatch:", err)
 		return config{}, err
 	}
 	return cfg, nil
@@ -110,7 +110,7 @@ const minInterval = time.Second
 
 // validate rejects flag values that would make the watch loop misbehave,
 // and stray positional arguments: the flag package stops parsing at the
-// first non-flag, so "spacelift-notifier foo --once" would otherwise
+// first non-flag, so "spacewatch foo --once" would otherwise
 // silently ignore --once.
 func validate(cfg config, positional []string) error {
 	if len(positional) > 0 {

@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/georgearnall/spacelift-notifier/internal/teamconfig"
+	"github.com/georgearnall/spacewatch/internal/teamconfig"
 	"golang.org/x/term"
 )
 

@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/georgearnall/spacelift-notifier/internal/configdir"
+	"github.com/georgearnall/spacewatch/internal/configdir"
 )
 
 // Config is the on-disk team configuration.
