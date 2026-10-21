@@ -64,11 +64,20 @@ func (n *Notifier) Send(title, body string) error {
 // PendingConfirmation sends a notification for a run that just started
 // pending confirmation.
 func (n *Notifier) PendingConfirmation(stackName, runTitle string) error {
-	body := stackName
-	if runTitle != "" {
-		body = stackName + " - " + runTitle
+	return n.Send("Spacelift: pending confirmation", runBody(stackName, runTitle))
+}
+
+// StillPending sends a reminder for a run that has been pending
+// confirmation for age (e.g. "20m").
+func (n *Notifier) StillPending(stackName, runTitle, age string) error {
+	return n.Send("Spacelift: still pending confirmation ("+age+")", runBody(stackName, runTitle))
+}
+
+func runBody(stackName, runTitle string) string {
+	if runTitle == "" {
+		return stackName
 	}
-	return n.Send("Spacelift: pending confirmation", body)
+	return stackName + " - " + runTitle
 }
 
 // quote renders s as an AppleScript string literal, escaping quotes and

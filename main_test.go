@@ -111,6 +111,7 @@ func TestParseFlags_RejectsInvalidValues(t *testing.T) {
 		{"--idle-interval", "0"},
 		{"--request-budget", "0"},
 		{"--request-budget", "-1"},
+		{"--remind", "-1m"},
 		{"extra-arg", "--once"},
 		{"--once", "extra-arg"},
 	}

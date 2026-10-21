@@ -33,6 +33,8 @@ Flags:
   --interval duration       Poll interval while there are pending confirmations (default 20s)
   --idle-interval duration  Poll interval while there are none (default 60s)
   --request-budget int      Self-imposed cap on API requests per hour (default 300)
+  --remind duration         Re-notify about a run still pending this long after
+                            the last notification; 0 disables (default 10m)
   --all                     Show every pending run on your team's stacks, not
                             just ones from your commits (toggle with a)
   --once                    Run a single poll cycle, print results, and exit
@@ -70,6 +72,7 @@ type config struct {
 	activeInterval time.Duration
 	idleInterval   time.Duration
 	requestBudget  int
+	remind         time.Duration
 	once           bool
 	noNotify       bool
 	all            bool
@@ -84,6 +87,7 @@ func parseFlags(args []string) (config, error) {
 		activeInterval: 20 * time.Second,
 		idleInterval:   60 * time.Second,
 		requestBudget:  300,
+		remind:         10 * time.Minute,
 	}
 
 	fs := flag.NewFlagSet("spacewatch", flag.ContinueOnError)
@@ -93,6 +97,7 @@ func parseFlags(args []string) (config, error) {
 	fs.DurationVar(&cfg.activeInterval, "interval", cfg.activeInterval, "poll interval while runs are pending")
 	fs.DurationVar(&cfg.idleInterval, "idle-interval", cfg.idleInterval, "poll interval while idle")
 	fs.IntVar(&cfg.requestBudget, "request-budget", cfg.requestBudget, "self-imposed API request budget per hour")
+	fs.DurationVar(&cfg.remind, "remind", cfg.remind, "re-notify about runs still pending after this long; 0 disables")
 	fs.BoolVar(&cfg.all, "all", false, "show every team run, not just yours")
 	fs.BoolVar(&cfg.once, "once", false, "run a single poll cycle and exit")
 	fs.BoolVar(&cfg.noNotify, "no-notify", false, "suppress desktop notifications")
@@ -125,6 +130,9 @@ func validate(cfg config, positional []string) error {
 	}
 	if cfg.idleInterval < minInterval {
 		return fmt.Errorf("--idle-interval must be at least %s, got %s", minInterval, cfg.idleInterval)
+	}
+	if cfg.remind < 0 {
+		return fmt.Errorf("--remind must not be negative, got %s", cfg.remind)
 	}
 	if cfg.requestBudget < 1 {
 		return fmt.Errorf("--request-budget must be at least 1, got %d", cfg.requestBudget)

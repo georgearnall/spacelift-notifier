@@ -16,9 +16,11 @@ import (
 	"github.com/georgearnall/spacewatch/internal/configdir"
 )
 
-// RunRecord tracks when a run was first observed pending confirmation.
+// RunRecord tracks when a run was first observed pending confirmation,
+// and when the user was last notified about it.
 type RunRecord struct {
-	Seen time.Time `json:"seen"`
+	Seen     time.Time `json:"seen"`
+	Notified time.Time `json:"notified,omitempty"`
 }
 
 // State is the on-disk dedup record. Runs holds exactly the set of runs
@@ -56,6 +58,7 @@ func (s *State) Observe(pendingIDs []string, now time.Time) (newlyPending []stri
 		}
 		next[id] = RunRecord{Seen: now}
 		if !coldStart {
+			next[id] = RunRecord{Seen: now, Notified: now}
 			newlyPending = append(newlyPending, id)
 		}
 	}
@@ -63,6 +66,29 @@ func (s *State) Observe(pendingIDs []string, now time.Time) (newlyPending []stri
 	s.Runs = next
 	s.LastPoll = now
 	return newlyPending
+}
+
+// DueReminders returns the runs still pending whose last notification
+// (or first sighting, if never notified) is at least every ago, and marks
+// them notified as of now. every <= 0 disables reminders.
+func (s *State) DueReminders(now time.Time, every time.Duration) []string {
+	if every <= 0 {
+		return nil
+	}
+	var due []string
+	for id, rec := range s.Runs {
+		last := rec.Notified
+		if last.IsZero() {
+			last = rec.Seen
+		}
+		if now.Sub(last) >= every {
+			rec.Notified = now
+			s.Runs[id] = rec
+			due = append(due, id)
+		}
+	}
+	slices.Sort(due)
+	return due
 }
 
 // UseLabels records the team labels this state is tracking. If they differ

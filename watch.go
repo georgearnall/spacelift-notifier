@@ -45,6 +45,7 @@ const (
 type pollResult struct {
 	items               []pending.PendingConfirmation
 	newlyPendingIDs     []string
+	remindIDs           []string // still pending and due a reminder
 	err                 error
 	authExpired         bool
 	reloginErr          error
@@ -118,6 +119,7 @@ func doPoll(ctx context.Context, c *spaceclient.Client, st *state.State, cfg con
 		ids[i] = it.RunID
 	}
 	res.newlyPendingIDs = st.Observe(ids, now)
+	res.remindIDs = st.DueReminders(now, cfg.remind)
 	res.items = items
 	res.reqTotal, res.reqWindow = c.Stats()
 	return res
@@ -148,10 +150,11 @@ func renderTable(items []pending.PendingConfirmation, showAll bool, toggleHint s
 	return ui.RenderTable(renderRows(items, selected), linksSupported, colorEnabled)
 }
 
-// notifyNewlyPending sends a desktop notification for each run that just
-// started pending confirmation this poll cycle.
+// notifyNewlyPending sends a desktop notification for each run in
+// res.items that just started pending confirmation this poll cycle, and a
+// reminder for each that has been pending long enough to be due one.
 func notifyNewlyPending(n *notify.Notifier, res pollResult) {
-	if len(res.newlyPendingIDs) == 0 {
+	if len(res.newlyPendingIDs) == 0 && len(res.remindIDs) == 0 {
 		return
 	}
 	byID := make(map[string]pending.PendingConfirmation, len(res.items))
@@ -164,6 +167,15 @@ func notifyNewlyPending(n *notify.Notifier, res pollResult) {
 			continue
 		}
 		if err := n.PendingConfirmation(it.StackName, it.Title); err != nil {
+			fmt.Fprintln(os.Stderr, "spacewatch: notify:", err)
+		}
+	}
+	for _, id := range res.remindIDs {
+		it, ok := byID[id]
+		if !ok {
+			continue
+		}
+		if err := n.StillPending(it.StackName, it.Title, ui.FormatAge(time.Since(it.CreatedAt))); err != nil {
 			fmt.Fprintln(os.Stderr, "spacewatch: notify:", err)
 		}
 	}

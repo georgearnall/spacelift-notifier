@@ -546,3 +546,16 @@ func TestRenderTable_EmptyMineViewHintsToggle(t *testing.T) {
 		t.Errorf("renderTable() empty team view = %q", got)
 	}
 }
+
+func TestNotifyNewlyPending_SendsReminders(t *testing.T) {
+	var sent []string
+	n := testNotifier(t, &sent)
+	res := pollResult{
+		items:     []pending.PendingConfirmation{{RunID: "r1", StackName: "orders-api", Title: "apply", CreatedAt: time.Now().Add(-20 * time.Minute)}},
+		remindIDs: []string{"r1", "not-visible"},
+	}
+	notifyNewlyPending(n, res)
+	if len(sent) != 1 || !strings.Contains(sent[0], "still pending confirmation (20m)") {
+		t.Errorf("sent = %v, want one reminder for orders-api at 20m", sent)
+	}
+}
