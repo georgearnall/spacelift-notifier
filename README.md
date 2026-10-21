@@ -38,7 +38,12 @@ See `spacewatch --help` for the full flag list. Notably:
   *collaborates on* (`folder:collab-team/<team>`).
 - `--team-label` (repeatable) - exact stack label to match instead, for full
   manual control. Bypasses `--team`/`config.json` entirely.
+- `--all` - show every pending run on your team's stacks. By default only
+  runs from your own commits (or that you triggered) are shown and notified.
+- `--remind` - re-notify about a run still pending this long after the last
+  notification (default `10m`, `0` disables).
 - `--once` - run a single poll cycle, print results, and exit.
+- `--version` - print the version.
 
 If you haven't configured a team yet and don't pass `--team`/`--team-label`,
 the tool prompts for your team name interactively the first time it runs,
@@ -60,6 +65,9 @@ spacewatch --team atlas
 - `↑` / `↓` - move the selection cursor
 - `Enter` - open the selected run in your browser (fallback for terminals
   that don't render the clickable OSC 8 links directly in the table)
+- `a` - toggle between your runs and all team runs
+- `r` - poll now
+- `?` - open/close the config pane (settings and request budget usage)
 - `l` - relogin via `spacectl profile login` (only offered once a poll
   detects your session has expired; only works for a browser-login profile
   - not environment-variable credentials or an API key/GitHub token
@@ -77,6 +85,7 @@ account/profile is active before running this tool.
 Spacelift's GraphQL API does not expose rate-limit headers, so this tool
 tracks and displays its own request count and self-imposed budget
 (`--request-budget`, default 300/hour) rather than a server-reported quota.
+Both are shown in the `?` pane.
 
 ## Releasing
 
