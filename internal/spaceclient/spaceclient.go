@@ -212,8 +212,10 @@ func (c *Client) recordRequest() {
 }
 
 // Stats returns the total number of requests made since this Client was
-// created, and the number made within the current rolling hour-long
-// window (used to enforce --request-budget).
+// created, and the number made within the current hour-long window (used
+// to enforce --request-budget). The window is fixed, not rolling: it
+// starts at the first request and resets on the first request made an
+// hour or more after that.
 func (c *Client) Stats() (total, windowCount int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

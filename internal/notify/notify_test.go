@@ -43,10 +43,10 @@ func TestSend_FallsBackToOSAScriptForUnknownTerminal(t *testing.T) {
 		},
 	}
 
-	if err := n.Send("Spacelift: pending confirmation", "my-stack — apply"); err != nil {
+	if err := n.Send("Spacelift: pending confirmation", "my-stack - apply"); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
-	if !strings.Contains(gotScript, `"my-stack — apply"`) || !strings.Contains(gotScript, `"Spacelift: pending confirmation"`) {
+	if !strings.Contains(gotScript, `"my-stack - apply"`) || !strings.Contains(gotScript, `"Spacelift: pending confirmation"`) {
 		t.Errorf("osascript script = %q, missing expected quoted title/body", gotScript)
 	}
 }
@@ -80,7 +80,7 @@ func TestPendingConfirmation_ComposesBody(t *testing.T) {
 	if err := n.PendingConfirmation("orders-api", "apply main"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(gotScript, "orders-api — apply main") {
+	if !strings.Contains(gotScript, "orders-api - apply main") {
 		t.Errorf("script = %q, want body to combine stack and run title", gotScript)
 	}
 

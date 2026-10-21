@@ -26,16 +26,16 @@ Flags:
                             If neither this nor --team-label is given and no
                             team is configured yet, you'll be prompted for one
                             (once) on startup.
-  --team-label value       Stack label that must match exactly for a stack to be
-                            considered yours (repeatable; supplying this flag
+  --team-label value        Stack label that must match exactly for a stack to
+                            be considered yours (repeatable; supplying this flag
                             replaces the default rather than adding to it, and
                             bypasses --team/config.json entirely).
   --interval duration       Poll interval while there are pending confirmations (default 20s)
   --idle-interval duration  Poll interval while there are none (default 60s)
   --request-budget int      Self-imposed cap on API requests per hour (default 300)
   --once                    Run a single poll cycle, print results, and exit
-  --no-notify                Suppress desktop notifications
-  -h, --help                 Show this help text
+  --no-notify               Suppress desktop notifications
+  -h, --help                Show this help text
 
 spacelift-notifier never calls a Spacelift mutation - it only reads and links.
 `

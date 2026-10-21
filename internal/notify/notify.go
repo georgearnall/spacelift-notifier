@@ -66,7 +66,7 @@ func (n *Notifier) Send(title, body string) error {
 func (n *Notifier) PendingConfirmation(stackName, runTitle string) error {
 	body := stackName
 	if runTitle != "" {
-		body = stackName + " — " + runTitle
+		body = stackName + " - " + runTitle
 	}
 	return n.Send("Spacelift: pending confirmation", body)
 }
