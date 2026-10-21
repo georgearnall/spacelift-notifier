@@ -22,6 +22,7 @@ type fakeClient struct {
 	responses []searchRunsQuery
 	calls     int
 	gotAfter  []*string
+	gotInput  []SearchInput
 	queryErr  error
 }
 
@@ -31,6 +32,7 @@ func (f *fakeClient) Query(_ context.Context, out any, vars map[string]any) erro
 	}
 	input, _ := vars["input"].(SearchInput)
 	f.gotAfter = append(f.gotAfter, input.After)
+	f.gotInput = append(f.gotInput, input)
 
 	q, ok := out.(*searchRunsQuery)
 	if !ok {
@@ -177,12 +179,17 @@ func TestPoll_RealQueryShapeAgainstHTTPServer(t *testing.T) {
 	vars, _ := gotBody["variables"].(map[string]any)
 	input, _ := vars["input"].(map[string]any)
 	predicates, _ := input["predicates"].([]any)
-	if len(predicates) != 1 {
-		t.Fatalf("variables.input.predicates = %v, want 1 entry", input["predicates"])
+	if len(predicates) != 2 {
+		t.Fatalf("variables.input.predicates = %v, want 2 entries", input["predicates"])
 	}
 	predicate, _ := predicates[0].(map[string]any)
 	if predicate["field"] != "state" {
 		t.Errorf("predicate field = %v, want \"state\"", predicate["field"])
+	}
+	predicate, _ = predicates[1].(map[string]any)
+	constraint, _ := predicate["constraint"].(map[string]any)
+	if predicate["field"] != "labels" || fmt.Sprint(constraint["stringEquals"]) != "[folder:owning-team/ecommerce]" {
+		t.Errorf("second predicate = %v, want labels stringEquals [folder:owning-team/ecommerce]", predicate)
 	}
 }
 
@@ -207,5 +214,22 @@ func TestPoll_SanitizesUntrustedText(t *testing.T) {
 	}
 	if got[0].Title != "fix bug  ]52;c;ZXZpbA==   evil" {
 		t.Errorf("Title = %q", got[0].Title)
+	}
+}
+
+func TestPoll_FiltersLabelsServerSide(t *testing.T) {
+	cfg := labels.Config{Labels: []string{"folder:owning-team/a", "folder:collab-team/a"}}
+	fc := &fakeClient{responses: []searchRunsQuery{{}}}
+	if _, err := Poll(context.Background(), fc, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range fc.gotInput[0].Predicates {
+		if p.Field == "labels" {
+			got = p.Constraint.StringEquals
+		}
+	}
+	if strings.Join(got, ",") != strings.Join(cfg.Labels, ",") {
+		t.Errorf("labels predicate = %v, want stringEquals %v", got, cfg.Labels)
 	}
 }
