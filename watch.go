@@ -350,7 +350,7 @@ func frame(s string, cols int) string {
 		text, nl := strings.CutSuffix(line, "\n")
 		b.WriteString(ansiClearEOL)
 		b.WriteString(text)
-		if w := ui.VisibleWidth(text); cols > 0 && w%cols != 0 {
+		if cols > 0 && !ui.EndsAtMargin(text, cols) {
 			b.WriteString(ansiClearEOL)
 		}
 		if nl {

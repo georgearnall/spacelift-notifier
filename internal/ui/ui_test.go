@@ -213,20 +213,26 @@ func TestRenderTable_PlanColumn(t *testing.T) {
 	}
 }
 
-func TestVisibleWidth(t *testing.T) {
+func TestEndsAtMargin(t *testing.T) {
 	cases := []struct {
+		name string
 		in   string
-		want int
+		cols int
+		want bool
 	}{
-		{"plain", 5},
-		{Style("bold", Bold, true), 4},
-		{Hyperlink("https://example.test/run", "open →"), 6},
-		{"· 2 pending", 11},
-		{"日本", 4},
+		{"short line", "abc", 10, false},
+		{"exact width", "1234567890", 10, true},
+		{"exact width, colored", Style("1234567890", Bold, true), 10, true},
+		{"hyperlink text only counts", "12345" + Hyperlink("https://example.test/run", "open →"), 11, true},
+		{"wraps to exactly two rows", strings.Repeat("x", 20), 10, true},
+		{"wraps with a partial second row", strings.Repeat("x", 15), 10, false},
+		{"wide char wraps early, fills two rows", "123456789日abcdefgh", 10, true},
+		{"wide char exactly fits", "12345678日", 10, true},
+		{"unknown width", "1234567890", 0, false},
 	}
 	for _, c := range cases {
-		if got := VisibleWidth(c.in); got != c.want {
-			t.Errorf("VisibleWidth(%q) = %d, want %d", c.in, got, c.want)
+		if got := EndsAtMargin(c.in, c.cols); got != c.want {
+			t.Errorf("%s: EndsAtMargin(%q, %d) = %v, want %v", c.name, c.in, c.cols, got, c.want)
 		}
 	}
 }

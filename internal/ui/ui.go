@@ -225,9 +225,34 @@ func envSupportsLinks(getenv func(string) string) bool {
 	return false
 }
 
-// VisibleWidth returns how many terminal columns s occupies once its
-// escape sequences (SGR colors, OSC 8 hyperlinks) are removed.
-func VisibleWidth(s string) int {
+// EndsAtMargin reports whether writing s from column 0 of a terminal cols
+// wide leaves the cursor in the deferred-wrap state: the last character
+// landed in the final column, so the cursor still sits on that cell until
+// the next character arrives. It simulates wrapping cell by cell rather
+// than comparing the total width, because a double-width character that
+// doesn't fit in a row's last cell wraps early and leaves that cell empty.
+// Escape sequences (SGR colors, OSC 8 hyperlinks) take no cells.
+func EndsAtMargin(s string, cols int) bool {
+	if cols <= 0 {
+		return false
+	}
+	col := 0
+	for _, r := range stripEscapes(s) {
+		w := runewidth.RuneWidth(r)
+		if w == 0 {
+			continue
+		}
+		if col+w > cols {
+			col = 0 // wraps onto the next row (early, for a wide character)
+		}
+		col += w
+	}
+	return col == cols
+}
+
+// stripEscapes removes CSI sequences (e.g. SGR colors) and OSC sequences
+// (e.g. OSC 8 hyperlinks) from s.
+func stripEscapes(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
 		if s[i] != 0x1b || i+1 >= len(s) {
@@ -254,7 +279,7 @@ func VisibleWidth(s string) int {
 			i++
 		}
 	}
-	return runewidth.StringWidth(b.String())
+	return b.String()
 }
 
 // TerminalWidth returns stdout's width in columns, or 0 if it isn't a

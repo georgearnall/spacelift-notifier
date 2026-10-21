@@ -587,6 +587,10 @@ func TestFrame_ExactWidthLineKeepsLastCharacter(t *testing.T) {
 	if got := frame(strings.Repeat("y", 20)+"\n", 10); strings.Contains(got, "y"+ansiClearEOL) {
 		t.Errorf("frame() clears after a line that wraps exactly at the margin: %q", got)
 	}
+	// A wide character that wraps early still fills both rows exactly.
+	if got := frame("123456789日abcdefgh\n", 10); strings.Contains(got, "h"+ansiClearEOL) {
+		t.Errorf("frame() clears after a line whose wide character wrapped early: %q", got)
+	}
 	// Unknown width: never clear after the text.
 	if got := frame("abc\n", 0); strings.Contains(got, "abc"+ansiClearEOL) {
 		t.Errorf("frame() with unknown width cleared after text: %q", got)
