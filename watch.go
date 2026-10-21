@@ -549,6 +549,7 @@ func runWatch(cfg config) {
 					return relogin(ctx, spaceclient.ReloginSupported, c.Reauth, restoreTerminal)
 				})
 				if resetTimer {
+					viewer = "" // the new session may be a different user; look it up again
 					timer.Reset(0) // poll again immediately with the fresh session
 				}
 				if handled {
