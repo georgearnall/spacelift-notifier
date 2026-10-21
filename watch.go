@@ -183,10 +183,15 @@ func crlf(s string) string {
 	return b.String()
 }
 
-func footer(res pollResult, cfg config, quitHint string) string {
-	next := nextInterval(cfg, len(res.items), res.reqWindow)
-	return fmt.Sprintf("polled %s · %d pending · requests: %d total, %d this hour (budget %d/hr) · next poll in %s%s\n",
-		res.polledAt.Format("15:04:05"), len(res.items), res.reqTotal, res.reqWindow, cfg.requestBudget, next.Round(time.Second), quitHint)
+// footer renders the status line. next is the delay actually scheduled
+// before the next poll; zero omits it (e.g. --once, where there is none).
+func footer(res pollResult, cfg config, next time.Duration, quitHint string) string {
+	nextPoll := ""
+	if next > 0 {
+		nextPoll = " · next poll in " + next.Round(time.Second).String()
+	}
+	return fmt.Sprintf("polled %s · %d pending · requests: %d total, %d this hour (budget %d/hr)%s%s\n",
+		res.polledAt.Format("15:04:05"), len(res.items), res.reqTotal, res.reqWindow, cfg.requestBudget, nextPoll, quitHint)
 }
 
 func runOnce(cfg config) {
@@ -216,7 +221,7 @@ func runOnce(cfg config) {
 	linksSupported := ui.SupportsLinks()
 	colorEnabled := ui.ColorEnabled()
 	fmt.Print(ui.RenderTable(renderRows(res.items, -1), linksSupported, colorEnabled))
-	fmt.Print(ui.Style(footer(res, cfg, ""), ui.Dim, colorEnabled))
+	fmt.Print(ui.Style(footer(res, cfg, 0, ""), ui.Dim, colorEnabled))
 }
 
 func runWatch(cfg config) {
@@ -252,8 +257,9 @@ func runWatch(cfg config) {
 	defer signal.Stop(sig)
 
 	var (
-		last     pollResult
-		selected int
+		last      pollResult
+		selected  int
+		nextDelay time.Duration // what poll() last scheduled, shown in the footer
 	)
 
 	redraw := func() {
@@ -272,7 +278,7 @@ func runWatch(cfg config) {
 		if last.authExpired {
 			quitHint = " · l to relogin" + quitHint
 		}
-		b.WriteString(ui.Style(footer(last, cfg, quitHint), ui.Dim, colorEnabled))
+		b.WriteString(ui.Style(footer(last, cfg, nextDelay, quitHint), ui.Dim, colorEnabled))
 		// readKeys puts the tty into raw mode, which on Unix also clears
 		// the OPOST output flag for the whole tty (stdin/stdout share
 		// one underlying device) - without it, a bare "\n" no longer
@@ -299,11 +305,12 @@ func runWatch(cfg config) {
 		if selected < 0 {
 			selected = 0
 		}
-		redraw()
-		if last.err != nil {
-			return cfg.idleInterval // back off on any poll error rather than hammering a failing API
+		nextDelay = nextInterval(cfg, len(last.items), last.reqWindow)
+		if last.err != nil && nextDelay < cfg.idleInterval {
+			nextDelay = cfg.idleInterval // back off on any poll error rather than hammering a failing API
 		}
-		return nextInterval(cfg, len(last.items), last.reqWindow)
+		redraw()
+		return nextDelay
 	}
 
 	timer := time.NewTimer(0) // fire immediately for the first poll

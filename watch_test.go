@@ -497,8 +497,8 @@ func TestFooter_ContainsKeyStats(t *testing.T) {
 	res := pollResult{polledAt: time.Now(), items: make([]pending.PendingConfirmation, 2), reqTotal: 5, reqWindow: 3}
 	cfg := config{requestBudget: 300, activeInterval: 20 * time.Second, idleInterval: 60 * time.Second}
 
-	got := footer(res, cfg, " · q to quit")
-	for _, want := range []string{"2 pending", "5 total", "3 this hour", "budget 300/hr", "q to quit"} {
+	got := footer(res, cfg, 20*time.Second, " · q to quit")
+	for _, want := range []string{"2 pending", "5 total", "3 this hour", "budget 300/hr", "next poll in 20s", "q to quit"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("footer() = %q, missing %q", got, want)
 		}
@@ -511,5 +511,12 @@ func TestOpenCommand(t *testing.T) {
 	}
 	if got := openCommand("linux"); got != "xdg-open" {
 		t.Errorf("openCommand(linux) = %q, want xdg-open", got)
+	}
+}
+
+func TestFooter_OmitsNextPollWhenNoneScheduled(t *testing.T) {
+	got := footer(pollResult{polledAt: time.Now()}, config{requestBudget: 300}, 0, "")
+	if strings.Contains(got, "next poll") {
+		t.Errorf("footer() = %q, want no next-poll text when none is scheduled", got)
 	}
 }
