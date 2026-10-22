@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mattn/go-runewidth"
+	"github.com/rivo/uniseg"
 	"golang.org/x/term"
 )
 
@@ -228,7 +228,7 @@ func envSupportsLinks(getenv func(string) string) bool {
 // EndsAtMargin reports whether writing s from column 0 of a terminal cols
 // wide leaves the cursor in the deferred-wrap state: the last character
 // landed in the final column, so the cursor still sits on that cell until
-// the next character arrives. It simulates wrapping cell by cell rather
+// the next character arrives. It simulates wrapping glyph by glyph rather
 // than comparing the total width, because a double-width character that
 // doesn't fit in a row's last cell wraps early and leaves that cell empty.
 // Escape sequences (SGR colors, OSC 8 hyperlinks) take no cells.
@@ -237,8 +237,11 @@ func EndsAtMargin(s string, cols int) bool {
 		return false
 	}
 	col := 0
-	for _, r := range stripEscapes(s) {
-		w := runewidth.RuneWidth(r)
+	gr := uniseg.NewGraphemes(stripEscapes(s))
+	for gr.Next() {
+		// Measured per grapheme cluster, not per rune, so a joined emoji
+		// like 👩‍💻 counts as the one two-cell glyph terminals draw.
+		w := gr.Width()
 		if w == 0 {
 			continue
 		}

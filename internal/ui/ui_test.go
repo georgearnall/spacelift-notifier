@@ -228,6 +228,7 @@ func TestEndsAtMargin(t *testing.T) {
 		{"wraps with a partial second row", strings.Repeat("x", 15), 10, false},
 		{"wide char wraps early, fills two rows", "123456789日abcdefgh", 10, true},
 		{"wide char exactly fits", "12345678日", 10, true},
+		{"joined emoji is one two-cell glyph", "123456👩‍💻ab", 10, true},
 		{"unknown width", "1234567890", 0, false},
 	}
 	for _, c := range cases {
