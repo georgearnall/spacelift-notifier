@@ -312,8 +312,8 @@ func renderConfig(cfg config, viewer string, showAll bool, notifier *notify.Noti
 		notifications = "off (--no-notify)"
 	}
 	team := cfg.team
-	if team == "" {
-		team = "(custom --team-label)"
+	if cfg.teamLabels.userSet || team == "" {
+		team = "(custom --team-label)" // explicit labels override --team entirely
 	}
 
 	const width = len("Notifications") // longest label, so both sections align

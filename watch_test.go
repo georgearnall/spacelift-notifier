@@ -714,3 +714,15 @@ func TestRescheduleForView(t *testing.T) {
 		t.Error("rescheduled before the first poll")
 	}
 }
+
+func TestRenderConfig_TeamLabelOverride(t *testing.T) {
+	cfg := config{team: "atlas", requestBudget: 300}
+	if err := cfg.teamLabels.Set("custom"); err != nil {
+		t.Fatal(err)
+	}
+	var sent []string
+	got := renderConfig(cfg, "me", false, testNotifier(t, &sent), pollResult{}, false)
+	if strings.Contains(got, "atlas") || !strings.Contains(got, "(custom --team-label)") {
+		t.Errorf("renderConfig() with --team-label override = %q, want the custom label marker, not the team", got)
+	}
+}
