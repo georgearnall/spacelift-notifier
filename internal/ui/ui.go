@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rivo/uniseg"
 	"golang.org/x/term"
 )
 
@@ -18,6 +19,8 @@ type Row struct {
 	Team     string
 	Stack    string
 	Title    string
+	Plan     string // e.g. "+2 ~3 -1", or "" if unknown
+	Destroys bool   // the plan destroys at least one resource
 	Age      string
 	URL      string
 	Selected bool
@@ -50,14 +53,15 @@ func Style(s, code string, enabled bool) string {
 // RenderTable renders rows as an aligned table. When linksSupported is
 // true, the LINK column is an OSC 8 hyperlink; otherwise it falls back to
 // printing the raw URL so it can still be copied. When colorEnabled is
-// true, the header is bold, the TEAM column is cyan, the AGE column is
-// dim, and the selected row's marker is highlighted.
+// true, the header is bold, the TEAM column is cyan, the PLAN column is
+// red when the plan destroys anything, the AGE column is dim, and the
+// selected row's marker is highlighted.
 func RenderTable(rows []Row, linksSupported, colorEnabled bool) string {
 	if len(rows) == 0 {
 		return "no pending confirmations for your team\n"
 	}
 
-	headers := []string{"", "TEAM", "STACK", "TITLE", "AGE", "LINK"}
+	headers := []string{"", "TEAM", "STACK", "TITLE", "PLAN", "AGE", "LINK"}
 	widths := make([]int, len(headers))
 	for i, h := range headers {
 		widths[i] = len(h)
@@ -73,7 +77,7 @@ func RenderTable(rows []Row, linksSupported, colorEnabled bool) string {
 		if r.Selected {
 			marker = ">"
 		}
-		cells[i] = []string{marker, r.Team, r.Stack, truncate(r.Title, 60), r.Age, link}
+		cells[i] = []string{marker, r.Team, r.Stack, truncate(r.Title, 60), r.Plan, r.Age, link}
 		// The LINK column is last and never padded, so its width (which
 		// includes invisible escape bytes when hyperlinked) doesn't
 		// affect alignment of the columns before it.
@@ -120,7 +124,8 @@ func RenderTable(rows []Row, linksSupported, colorEnabled bool) string {
 	return b.String()
 }
 
-// styleCell applies per-column coloring: TEAM is cyan, AGE is dim, the
+// styleCell applies per-column coloring: TEAM is cyan, PLAN is red when it
+// destroys anything, AGE is dim, the
 // marker is highlighted when its row is selected, and the remaining
 // columns are bolded on the selected row for a full-row highlight.
 func styleCell(col int, s string, r Row, colorEnabled bool) string {
@@ -135,7 +140,12 @@ func styleCell(col int, s string, r Row, colorEnabled bool) string {
 		return s
 	case 1: // team
 		return Style(s, Cyan, true)
-	case 4: // age
+	case 4: // plan
+		if r.Destroys {
+			return Style(s, BoldRed, true)
+		}
+		return s
+	case 5: // age
 		return Style(s, Dim, true)
 	default:
 		if r.Selected {
@@ -213,4 +223,74 @@ func envSupportsLinks(getenv func(string) string) bool {
 		return true
 	}
 	return false
+}
+
+// EndsAtMargin reports whether writing s from column 0 of a terminal cols
+// wide leaves the cursor in the deferred-wrap state: the last character
+// landed in the final column, so the cursor still sits on that cell until
+// the next character arrives. It simulates wrapping glyph by glyph rather
+// than comparing the total width, because a double-width character that
+// doesn't fit in a row's last cell wraps early and leaves that cell empty.
+// Escape sequences (SGR colors, OSC 8 hyperlinks) take no cells.
+func EndsAtMargin(s string, cols int) bool {
+	if cols <= 0 {
+		return false
+	}
+	col := 0
+	gr := uniseg.NewGraphemes(stripEscapes(s))
+	for gr.Next() {
+		// Measured per grapheme cluster, not per rune, so a joined emoji
+		// like 👩‍💻 counts as the one two-cell glyph terminals draw.
+		w := gr.Width()
+		if w == 0 {
+			continue
+		}
+		if col+w > cols {
+			col = 0 // wraps onto the next row (early, for a wide character)
+		}
+		col += w
+	}
+	return col == cols
+}
+
+// stripEscapes removes CSI sequences (e.g. SGR colors) and OSC sequences
+// (e.g. OSC 8 hyperlinks) from s.
+func stripEscapes(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != 0x1b || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		switch s[i+1] {
+		case '[': // CSI: parameters, then a final byte in 0x40-0x7e
+			j := i + 2
+			for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
+				j++
+			}
+			i = j
+		case ']': // OSC: terminated by BEL or ST (ESC \)
+			j := i + 2
+			for j < len(s) && s[j] != 0x07 && !(s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\') {
+				j++
+			}
+			if j < len(s) && s[j] == 0x1b {
+				j++
+			}
+			i = j
+		default:
+			i++
+		}
+	}
+	return b.String()
+}
+
+// TerminalWidth returns stdout's width in columns, or 0 if it isn't a
+// terminal.
+func TerminalWidth() int {
+	w, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil {
+		return 0
+	}
+	return w
 }

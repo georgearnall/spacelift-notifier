@@ -40,6 +40,7 @@ func resolveTeamLabels(cfg *config, prompt func() (string, error)) error {
 		return fmt.Errorf("saving team config: %w", err)
 	}
 
+	cfg.team = tc.Team
 	cfg.teamLabels.values = tc.Labels()
 	return nil
 }

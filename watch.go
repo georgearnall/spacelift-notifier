@@ -24,14 +24,14 @@ const (
 	ansiAltScreenOn  = "\x1b[?1049h\x1b[H\x1b[?25l"
 	ansiAltScreenOff = "\x1b[?25h\x1b[?1049l"
 
-	// ansiClearScreen clears the entire screen and homes the cursor. A
-	// full clear (rather than just homing the cursor and overwriting)
-	// avoids ghosting: if a new frame is narrower or shorter than the
-	// previous one (e.g. the pending count just dropped to zero, or the
-	// terminal was resized), simply overwriting from the top leaves
-	// stale characters from the old, wider frame visible past the end of
-	// the new, shorter lines.
+	// ansiClearScreen clears the entire screen and homes the cursor. Only
+	// used after a resize, when lines may have wrapped differently; normal
+	// redraws overwrite in place (see frame) so the once-a-second
+	// countdown doesn't flicker.
 	ansiClearScreen = "\x1b[2J\x1b[H"
+	ansiHome        = "\x1b[H"
+	ansiClearEOL    = "\x1b[K"
+	ansiClearBelow  = "\x1b[J"
 
 	// lowBudgetFloor is the poll delay once the self-imposed request
 	// budget for the current hour has been used up.
@@ -45,6 +45,7 @@ const (
 type pollResult struct {
 	items               []pending.PendingConfirmation
 	newlyPendingIDs     []string
+	remindIDs           []string // still pending and due a reminder
 	err                 error
 	authExpired         bool
 	reloginErr          error
@@ -91,8 +92,21 @@ func fail(format string, args ...any) {
 // doPoll runs one poll cycle: query pending confirmations, run them
 // through the dedup state to find which are newly pending, and capture
 // the request-count stats as of this poll.
-func doPoll(ctx context.Context, c *spaceclient.Client, st *state.State, cfg config) pollResult {
+//
+// viewer caches the authenticated user's login; if it's empty it is
+// looked up first, and a failure is reported like any other poll error
+// (so an expired session still offers relogin).
+func doPoll(ctx context.Context, c *spaceclient.Client, st *state.State, cfg config, viewer *string) pollResult {
 	now := time.Now()
+	if *viewer == "" {
+		id, err := c.ViewerID(ctx)
+		if err != nil {
+			res := pollResult{polledAt: now, err: fmt.Errorf("identifying current user: %w", err), authExpired: isUnauthorizedErr(err)}
+			res.reqTotal, res.reqWindow = c.Stats()
+			return res
+		}
+		*viewer = id
+	}
 	items, err := pending.Poll(ctx, c, labels.Config{Labels: cfg.teamLabels.values})
 	res := pollResult{polledAt: now, err: err, authExpired: isUnauthorizedErr(err)}
 	if err != nil {
@@ -105,15 +119,43 @@ func doPoll(ctx context.Context, c *spaceclient.Client, st *state.State, cfg con
 		ids[i] = it.RunID
 	}
 	res.newlyPendingIDs = st.Observe(ids, now)
+	res.remindIDs = st.DueReminders(now, cfg.remind)
 	res.items = items
 	res.reqTotal, res.reqWindow = c.Stats()
 	return res
 }
 
-// notifyNewlyPending sends a desktop notification for each run that just
-// started pending confirmation this poll cycle.
-func notifyNewlyPending(n *notify.Notifier, res pollResult) {
-	if len(res.newlyPendingIDs) == 0 {
+// visibleItems returns the runs shown in the current view: all of them
+// when showAll is set, otherwise only the viewer's own.
+func visibleItems(items []pending.PendingConfirmation, viewer string, showAll bool) []pending.PendingConfirmation {
+	if showAll {
+		return items
+	}
+	var mine []pending.PendingConfirmation
+	for _, it := range items {
+		if it.IsMine(viewer) {
+			mine = append(mine, it)
+		}
+	}
+	return mine
+}
+
+// renderTable renders the visible runs, with an empty-state message that
+// says which view is active and how to switch (toggleHint, e.g. "a" or
+// "--all").
+func renderTable(items []pending.PendingConfirmation, showAll bool, toggleHint string, selected int, linksSupported, colorEnabled bool) string {
+	if len(items) == 0 && !showAll {
+		return fmt.Sprintf("no pending confirmations from your commits (%s: show all team runs)\n", toggleHint)
+	}
+	return ui.RenderTable(renderRows(items, selected), linksSupported, colorEnabled)
+}
+
+// notifyNewlyPending sends a desktop notification for each run in
+// res.items that just started pending confirmation this poll cycle, and a
+// reminder for each that has been pending long enough to be due one.
+// sent is called with each run ID whose notification was delivered.
+func notifyNewlyPending(n *notify.Notifier, res pollResult, sent func(runID string)) {
+	if len(res.newlyPendingIDs) == 0 && len(res.remindIDs) == 0 {
 		return
 	}
 	byID := make(map[string]pending.PendingConfirmation, len(res.items))
@@ -125,9 +167,22 @@ func notifyNewlyPending(n *notify.Notifier, res pollResult) {
 		if !ok {
 			continue
 		}
-		if err := n.PendingConfirmation(it.StackName, it.Title); err != nil {
+		if err := n.PendingConfirmation(it.StackName, it.Title, it.RunURL); err != nil {
 			fmt.Fprintln(os.Stderr, "spacewatch: notify:", err)
+			continue
 		}
+		sent(id)
+	}
+	for _, id := range res.remindIDs {
+		it, ok := byID[id]
+		if !ok {
+			continue
+		}
+		if err := n.StillPending(it.StackName, it.Title, ui.FormatAge(time.Since(it.CreatedAt)), it.RunURL); err != nil {
+			fmt.Fprintln(os.Stderr, "spacewatch: notify:", err)
+			continue
+		}
+		sent(id)
 	}
 }
 
@@ -141,10 +196,16 @@ func renderRows(items []pending.PendingConfirmation, selected int) []ui.Row {
 		if team == "" {
 			team = it.MatchedLabel
 		}
+		var plan string
+		if it.Plan != nil {
+			plan = fmt.Sprintf("+%d ~%d -%d", it.Plan.Add, it.Plan.Change, it.Plan.Delete)
+		}
 		rows[i] = ui.Row{
 			Team:     team,
 			Stack:    it.StackName,
 			Title:    it.Title,
+			Plan:     plan,
+			Destroys: it.Plan != nil && it.Plan.Delete > 0,
 			Age:      ui.FormatAge(now.Sub(it.CreatedAt)),
 			URL:      it.RunURL,
 			Selected: i == selected,
@@ -167,6 +228,23 @@ func nextInterval(cfg config, pendingCount, reqWindow int) time.Duration {
 	return d
 }
 
+// rescheduleForView re-evaluates the poll delay after the view changes,
+// since nextInterval depends on how many runs are visible: revealing
+// pending runs should switch an idle wait to the active cadence. It only
+// ever brings the next poll forward (never postpones it), measured from
+// when the last poll ran, and leaves the error backoff alone. The budget
+// floor still applies through nextInterval.
+func rescheduleForView(cfg config, last pollResult, visible int, nextPollAt time.Time) (time.Time, bool) {
+	if last.polledAt.IsZero() || last.err != nil {
+		return nextPollAt, false
+	}
+	at := last.polledAt.Add(nextInterval(cfg, visible, last.reqWindow))
+	if !at.Before(nextPollAt) {
+		return nextPollAt, false
+	}
+	return at, true
+}
+
 // crlf normalizes line breaks to "\r\n" for output written while the tty
 // is in raw mode (see redraw's call site for why). It only inserts "\r"
 // before a "\n" that doesn't already have one, so it's safe to call on
@@ -183,15 +261,121 @@ func crlf(s string) string {
 	return b.String()
 }
 
-// footer renders the status line. next is the delay actually scheduled
-// before the next poll; zero omits it (e.g. --once, where there is none).
-func footer(res pollResult, cfg config, next time.Duration, quitHint string) string {
-	nextPoll := ""
+// footer renders the status line: when the last poll ran, how many runs
+// are shown, and the time until the next poll. next <= 0 omits the
+// countdown (e.g. --once, where there is no next poll).
+func footer(polledAt time.Time, shown int, next time.Duration) string {
+	line := fmt.Sprintf("polled %s · %d pending", polledAt.Format("15:04:05"), shown)
 	if next > 0 {
-		nextPoll = " · next poll in " + next.Round(time.Second).String()
+		line += " · next poll in " + next.Round(time.Second).String()
 	}
-	return fmt.Sprintf("polled %s · %d pending · requests: %d total, %d this hour (budget %d/hr)%s%s\n",
-		res.polledAt.Format("15:04:05"), len(res.items), res.reqTotal, res.reqWindow, cfg.requestBudget, nextPoll, quitHint)
+	return line + "\n"
+}
+
+// keyHints renders the watch-mode key legend, in the same bracketed layout
+// as gh-monitor.
+func keyHints(showAll, authExpired bool) string {
+	toggle := "[a] all team runs"
+	if showAll {
+		toggle = "[a] my runs"
+	}
+	hints := "[↑↓] move  [↵] open  " + toggle + "  [r] refresh  "
+	if authExpired {
+		hints += "[l] relogin  "
+	}
+	return hints + "[?] config  [q] quit\n"
+}
+
+// viewTitle is the bold header line, naming the active view.
+func viewTitle(showAll bool) string {
+	if showAll {
+		return "spacewatch · all team runs"
+	}
+	return "spacewatch · your runs"
+}
+
+// renderConfig renders the ? pane, which replaces the main view while
+// open: the effective settings, and the request budget usage that used to
+// clutter the main footer.
+func renderConfig(cfg config, viewer string, showAll bool, notifier *notify.Notifier, res pollResult, colorEnabled bool) string {
+	dim := func(s string) string { return ui.Style(s, ui.Dim, colorEnabled) }
+	view := "your runs"
+	if showAll {
+		view = "all team runs"
+	}
+	remind := "off"
+	if cfg.remind > 0 {
+		remind = "every " + cfg.remind.String()
+	}
+	notifications := notifier.Method()
+	if cfg.noNotify {
+		notifications = "off (--no-notify)"
+	}
+	team := cfg.team
+	if cfg.teamLabels.userSet || team == "" {
+		team = "(custom --team-label)" // explicit labels override --team entirely
+	}
+
+	const width = len("Notifications") // longest label, so both sections align
+	section := func(b *strings.Builder, title string, rows [][2]string) {
+		b.WriteString(dim(title) + "\n")
+		for _, r := range rows {
+			b.WriteString("  " + dim(fmt.Sprintf("%-*s", width, r[0])) + "  " + r[1] + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	var b strings.Builder
+	b.WriteString(ui.Style("spacewatch", ui.Bold, colorEnabled) + " - config\n\n")
+	section(&b, "SETTINGS", [][2]string{
+		{"Viewer", viewer},
+		{"Team", team},
+		{"Labels", strings.Join(cfg.teamLabels.values, ", ")},
+		{"View", view},
+		{"Active poll", cfg.activeInterval.String()},
+		{"Idle poll", cfg.idleInterval.String()},
+		{"Reminders", remind},
+		{"Notifications", notifications},
+		{"Version", version},
+	})
+	section(&b, "REQUESTS", [][2]string{
+		{"This hour", fmt.Sprintf("%d of %d budget", res.reqWindow, cfg.requestBudget)},
+		{"Total", fmt.Sprintf("%d since start", res.reqTotal)},
+	})
+	b.WriteString(dim("[?] close  [q] quit") + "\n")
+	return b.String()
+}
+
+// frame turns rendered output into an in-place redraw: home the cursor,
+// clear each line before writing it, and clear anything below the last
+// line. This avoids ghosting when a frame is narrower or shorter than the
+// previous one, without the flicker of clearing the whole screen first.
+//
+// Each line is also cleared after it's written, to remove stale text to
+// the right of a wrapped line's tail, except when the line ends exactly at
+// the right margin: there the terminal defers the wrap and leaves the
+// cursor on the last cell, so clearing would erase the final character.
+// cols is the terminal width; 0 (unknown) skips the trailing clear.
+func frame(s string, cols int) string {
+	var b strings.Builder
+	b.WriteString(ansiHome)
+	lines := strings.SplitAfter(s, "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		text, nl := strings.CutSuffix(line, "\n")
+		b.WriteString(ansiClearEOL)
+		b.WriteString(text)
+		if cols > 0 && !ui.EndsAtMargin(text, cols) {
+			b.WriteString(ansiClearEOL)
+		}
+		if nl {
+			b.WriteByte('\n')
+		}
+	}
+	b.WriteString(ansiClearBelow)
+	return b.String()
 }
 
 func runOnce(cfg config) {
@@ -206,13 +390,15 @@ func runOnce(cfg config) {
 	}
 	st.UseLabels(cfg.teamLabels.values)
 
-	res := doPoll(ctx, c, st, cfg)
+	var viewer string
+	res := doPoll(ctx, c, st, cfg, &viewer)
 	if res.err != nil {
 		fail("%v", res.err)
 	}
+	res.items = visibleItems(res.items, viewer, cfg.all)
 
 	if !cfg.noNotify {
-		notifyNewlyPending(notify.New(), res)
+		notifyNewlyPending(notify.New(), res, func(id string) { st.MarkNotified(id, time.Now()) })
 	}
 	if err := st.Save(); err != nil {
 		fmt.Fprintln(os.Stderr, "spacewatch: saving state:", err)
@@ -220,8 +406,8 @@ func runOnce(cfg config) {
 
 	linksSupported := ui.SupportsLinks()
 	colorEnabled := ui.ColorEnabled()
-	fmt.Print(ui.RenderTable(renderRows(res.items, -1), linksSupported, colorEnabled))
-	fmt.Print(ui.Style(footer(res, cfg, 0, ""), ui.Dim, colorEnabled))
+	fmt.Print(renderTable(res.items, cfg.all, "--all", -1, linksSupported, colorEnabled))
+	fmt.Print(ui.Style(footer(res.polledAt, len(res.items), 0), ui.Dim, colorEnabled))
 }
 
 func runWatch(cfg config) {
@@ -257,28 +443,37 @@ func runWatch(cfg config) {
 	defer signal.Stop(sig)
 
 	var (
-		last      pollResult
-		selected  int
-		nextDelay time.Duration // what poll() last scheduled, shown in the footer
+		last       pollResult
+		viewer     string
+		showAll    = cfg.all
+		selected   int
+		nextPollAt time.Time // when the scheduled poll fires, for the footer countdown
+		fullClear  bool      // clear the whole screen on the next redraw (after a resize)
+		configOpen bool      // the ? pane is showing instead of the main view
 	)
 
 	redraw := func() {
 		var b strings.Builder
-		b.WriteString(ansiClearScreen)
-		switch {
-		case last.reloginErr != nil:
-			b.WriteString(ui.Style(fmt.Sprintf("spacewatch: relogin failed: %v (press l to retry)\n\n", last.reloginErr), ui.BoldRed, colorEnabled))
-		case last.authExpired:
-			b.WriteString(ui.Style("spacewatch: session expired - press l to relogin\n\n", ui.BoldRed, colorEnabled))
-		case last.err != nil:
-			b.WriteString(ui.Style(fmt.Sprintf("spacewatch: poll error (retrying): %v\n\n", last.err), ui.BoldRed, colorEnabled))
+		if configOpen {
+			b.WriteString(renderConfig(cfg, viewer, showAll, notifier, last, colorEnabled))
+		} else {
+			view := visibleItems(last.items, viewer, showAll)
+			b.WriteString(ui.Style(viewTitle(showAll), ui.Bold, colorEnabled) + "\n\n")
+			switch {
+			case last.reloginErr != nil:
+				b.WriteString(ui.Style(fmt.Sprintf("spacewatch: relogin failed: %v (press l to retry)\n\n", last.reloginErr), ui.BoldRed, colorEnabled))
+			case last.authExpired:
+				b.WriteString(ui.Style("spacewatch: session expired - press l to relogin\n\n", ui.BoldRed, colorEnabled))
+			case last.err != nil:
+				b.WriteString(ui.Style(fmt.Sprintf("spacewatch: poll error (retrying): %v\n\n", last.err), ui.BoldRed, colorEnabled))
+			}
+			b.WriteString(renderTable(view, showAll, "a", selected, linksSupported, colorEnabled))
+			b.WriteString("\n")
+			b.WriteString(ui.Style(keyHints(showAll, last.authExpired), ui.Dim, colorEnabled))
+			if !last.polledAt.IsZero() {
+				b.WriteString(ui.Style(footer(last.polledAt, len(view), max(time.Until(nextPollAt), 0)), ui.Dim, colorEnabled))
+			}
 		}
-		b.WriteString(ui.RenderTable(renderRows(last.items, selected), linksSupported, colorEnabled))
-		quitHint := " · q to quit"
-		if last.authExpired {
-			quitHint = " · l to relogin" + quitHint
-		}
-		b.WriteString(ui.Style(footer(last, cfg, nextDelay, quitHint), ui.Dim, colorEnabled))
 		// readKeys puts the tty into raw mode, which on Unix also clears
 		// the OPOST output flag for the whole tty (stdin/stdout share
 		// one underlying device) - without it, a bare "\n" no longer
@@ -286,71 +481,108 @@ func runWatch(cfg config) {
 		// continues from whatever column the previous line ended at
 		// instead of resetting to column 0. Normalize to "\r\n" so this
 		// renders correctly regardless of OPOST state.
-		fmt.Print(crlf(b.String()))
+		out := frame(b.String(), ui.TerminalWidth())
+		if fullClear {
+			out = ansiClearScreen + out
+			fullClear = false
+		}
+		fmt.Print(crlf(out))
+	}
+
+	clampSelection := func() {
+		n := len(visibleItems(last.items, viewer, showAll))
+		if selected >= n {
+			selected = n - 1
+		}
+		if selected < 0 {
+			selected = 0
+		}
 	}
 
 	poll := func() time.Duration {
-		last = doPoll(ctx, c, st, cfg)
+		last = doPoll(ctx, c, st, cfg, &viewer)
 		if last.err == nil {
 			if !cfg.noNotify {
-				notifyNewlyPending(notifier, last)
+				view := last
+				view.items = visibleItems(last.items, viewer, showAll)
+				notifyNewlyPending(notifier, view, func(id string) { st.MarkNotified(id, time.Now()) })
 			}
 			if err := st.Save(); err != nil {
 				last.err = fmt.Errorf("saving state: %w", err)
 			}
 		}
-		if selected >= len(last.items) {
-			selected = len(last.items) - 1
-		}
-		if selected < 0 {
-			selected = 0
-		}
-		nextDelay = nextInterval(cfg, len(last.items), last.reqWindow)
+		clampSelection()
+		nextDelay := nextInterval(cfg, len(visibleItems(last.items, viewer, showAll)), last.reqWindow)
 		if last.err != nil && nextDelay < cfg.idleInterval {
 			nextDelay = cfg.idleInterval // back off on any poll error rather than hammering a failing API
 		}
+		nextPollAt = time.Now().Add(nextDelay)
 		redraw()
 		return nextDelay
 	}
 
 	timer := time.NewTimer(0) // fire immediately for the first poll
 	defer timer.Stop()
+	countdown := time.NewTicker(time.Second)
+	defer countdown.Stop()
 
 	for {
 		select {
 		case <-timer.C:
 			timer.Reset(poll())
 		case k := <-keys:
+			if configOpen && k != keyQuit && k != keyConfig {
+				continue // the pane only responds to ? and q
+			}
 			switch k {
 			case keyQuit:
 				return
+			case keyConfig:
+				configOpen = !configOpen
+				redraw()
 			case keyUp:
 				if selected > 0 {
 					selected--
 					redraw()
 				}
 			case keyDown:
-				if selected < len(last.items)-1 {
+				if selected < len(visibleItems(last.items, viewer, showAll))-1 {
 					selected++
 					redraw()
 				}
 			case keyEnter:
-				if selected >= 0 && selected < len(last.items) {
-					openURL(last.items[selected].RunURL)
+				if view := visibleItems(last.items, viewer, showAll); selected >= 0 && selected < len(view) {
+					openURL(view[selected].RunURL)
 				}
+			case keyRefresh:
+				timer.Reset(0)
+			case keyToggleAll:
+				showAll = !showAll
+				clampSelection()
+				if at, ok := rescheduleForView(cfg, last, len(visibleItems(last.items, viewer, showAll)), nextPollAt); ok {
+					nextPollAt = at
+					timer.Reset(max(time.Until(at), 0))
+				}
+				redraw()
 			case keyRelogin:
 				var resetTimer, handled bool
 				last, resetTimer, handled = applyReloginKey(last, func() error {
 					return relogin(ctx, spaceclient.ReloginSupported, c.Reauth, restoreTerminal)
 				})
 				if resetTimer {
+					viewer = "" // the new session may be a different user; look it up again
 					timer.Reset(0) // poll again immediately with the fresh session
 				}
 				if handled {
 					redraw()
 				}
 			}
+		case <-countdown.C:
+			if !last.polledAt.IsZero() {
+				redraw()
+			}
 		case <-resized:
+			fullClear = true
 			redraw()
 		case <-sig:
 			return // let the deferred restoreTerminal/ansiAltScreenOff run before exiting

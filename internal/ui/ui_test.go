@@ -195,3 +195,45 @@ func TestEnvSupportsLinks(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderTable_PlanColumn(t *testing.T) {
+	rows := []Row{
+		{Team: "t", Stack: "safe", Title: "x", Plan: "+1 ~2 -0", Age: "1m", URL: "u"},
+		{Team: "t", Stack: "risky", Title: "x", Plan: "+0 ~0 -3", Destroys: true, Age: "1m", URL: "u"},
+	}
+	got := RenderTable(rows, false, true)
+	if !strings.Contains(got, "PLAN") || !strings.Contains(got, "+1 ~2 -0") {
+		t.Errorf("RenderTable() missing PLAN column: %q", got)
+	}
+	if !strings.Contains(got, BoldRed+"+0 ~0 -3") {
+		t.Errorf("RenderTable() did not highlight a destroying plan in red: %q", got)
+	}
+	if strings.Contains(got, BoldRed+"+1 ~2 -0") {
+		t.Errorf("RenderTable() highlighted a non-destroying plan: %q", got)
+	}
+}
+
+func TestEndsAtMargin(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		cols int
+		want bool
+	}{
+		{"short line", "abc", 10, false},
+		{"exact width", "1234567890", 10, true},
+		{"exact width, colored", Style("1234567890", Bold, true), 10, true},
+		{"hyperlink text only counts", "12345" + Hyperlink("https://example.test/run", "open →"), 11, true},
+		{"wraps to exactly two rows", strings.Repeat("x", 20), 10, true},
+		{"wraps with a partial second row", strings.Repeat("x", 15), 10, false},
+		{"wide char wraps early, fills two rows", "123456789日abcdefgh", 10, true},
+		{"wide char exactly fits", "12345678日", 10, true},
+		{"joined emoji is one two-cell glyph", "123456👩‍💻ab", 10, true},
+		{"unknown width", "1234567890", 0, false},
+	}
+	for _, c := range cases {
+		if got := EndsAtMargin(c.in, c.cols); got != c.want {
+			t.Errorf("%s: EndsAtMargin(%q, %d) = %v, want %v", c.name, c.in, c.cols, got, c.want)
+		}
+	}
+}

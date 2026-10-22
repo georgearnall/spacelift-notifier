@@ -111,6 +111,7 @@ func TestParseFlags_RejectsInvalidValues(t *testing.T) {
 		{"--idle-interval", "0"},
 		{"--request-budget", "0"},
 		{"--request-budget", "-1"},
+		{"--remind", "-1m"},
 		{"extra-arg", "--once"},
 		{"--once", "extra-arg"},
 	}
@@ -124,5 +125,12 @@ func TestParseFlags_RejectsInvalidValues(t *testing.T) {
 func TestParseFlags_AcceptsMinimumValues(t *testing.T) {
 	if _, err := parseFlags([]string{"--interval", "1s", "--idle-interval", "1s", "--request-budget", "1"}); err != nil {
 		t.Errorf("parseFlags() error = %v, want nil", err)
+	}
+}
+
+func TestParseFlags_Version(t *testing.T) {
+	cfg, err := parseFlags([]string{"--version"})
+	if err != nil || !cfg.showVersion {
+		t.Errorf("parseFlags([--version]) = %+v, %v; want showVersion", cfg, err)
 	}
 }

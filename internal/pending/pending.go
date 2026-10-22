@@ -37,6 +37,16 @@ type PendingConfirmation struct {
 	UpdatedAt    time.Time
 	MatchedLabel string
 	RunURL       string
+	AuthorLogin  string // commit author's VCS login
+	TriggeredBy  string // Spacelift identity that triggered the run
+	// Plan is the resource counts from the run's plan, or nil if the run
+	// has no plan delta.
+	Plan *Plan
+}
+
+// Plan summarizes the resources a run's plan will add, change and destroy.
+type Plan struct {
+	Add, Change, Delete int
 }
 
 // SearchInput mirrors Spacelift's SearchInput GraphQL input type. Its Go
@@ -86,12 +96,25 @@ type runNode struct {
 }
 
 type runFields struct {
-	ID         string `graphql:"id"`
-	CanConfirm bool   `graphql:"canConfirm"`
-	Title      string `graphql:"title"`
-	Branch     string `graphql:"branch"`
-	CreatedAt  int64  `graphql:"createdAt"`
-	UpdatedAt  int64  `graphql:"updatedAt"`
+	ID          string  `graphql:"id"`
+	CanConfirm  bool    `graphql:"canConfirm"`
+	Title       string  `graphql:"title"`
+	Branch      string  `graphql:"branch"`
+	CreatedAt   int64   `graphql:"createdAt"`
+	UpdatedAt   int64   `graphql:"updatedAt"`
+	Delta       *delta  `graphql:"delta"`
+	TriggeredBy string  `graphql:"triggeredBy"`
+	Commit      *commit `graphql:"commit"`
+}
+
+type commit struct {
+	AuthorLogin string `graphql:"authorLogin"`
+}
+
+type delta struct {
+	AddCount    int `graphql:"addCount"`
+	ChangeCount int `graphql:"changeCount"`
+	DeleteCount int `graphql:"deleteCount"`
 }
 
 type stackFields struct {
@@ -163,6 +186,9 @@ func Poll(ctx context.Context, c queryer, cfg labels.Config) ([]PendingConfirmat
 				UpdatedAt:    time.Unix(run.UpdatedAt, 0),
 				MatchedLabel: matchedOn,
 				RunURL:       c.RunURL(stack.ID, run.ID),
+				Plan:         planFrom(run.Delta),
+				AuthorLogin:  authorLogin(run.Commit),
+				TriggeredBy:  run.TriggeredBy,
 			})
 		}
 
@@ -174,6 +200,30 @@ func Poll(ctx context.Context, c queryer, cfg labels.Config) ([]PendingConfirmat
 	}
 
 	return results, nil
+}
+
+func authorLogin(c *commit) string {
+	if c == nil {
+		return ""
+	}
+	return c.AuthorLogin
+}
+
+// IsMine reports whether viewer (a Spacelift login) wrote the run's commit
+// or triggered the run directly. Most tracked runs are triggered by a CI
+// identity, so the commit author is the main signal.
+func (p PendingConfirmation) IsMine(viewer string) bool {
+	if viewer == "" {
+		return false
+	}
+	return strings.EqualFold(p.AuthorLogin, viewer) || strings.EqualFold(p.TriggeredBy, viewer)
+}
+
+func planFrom(d *delta) *Plan {
+	if d == nil {
+		return nil
+	}
+	return &Plan{Add: d.AddCount, Change: d.ChangeCount, Delete: d.DeleteCount}
 }
 
 // sanitize replaces control characters and bidi formatting characters

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/georgearnall/spacewatch/internal/pending"
 	"github.com/georgearnall/spacewatch/internal/spaceclient"
 	"github.com/georgearnall/spacewatch/internal/state"
+	"github.com/georgearnall/spacewatch/internal/ui"
 	"github.com/spacelift-io/spacectl/client"
 	"github.com/spacelift-io/spacectl/client/session"
 )
@@ -104,7 +106,7 @@ func TestNotifyNewlyPending(t *testing.T) {
 		newlyPendingIDs: []string{"r2", "does-not-exist"},
 	}
 
-	notifyNewlyPending(n, res)
+	notifyNewlyPending(n, res, func(string) {})
 
 	if len(sent) != 1 || !strings.Contains(sent[0], "billing-api") {
 		t.Errorf("sent notifications = %v, want exactly one for billing-api", sent)
@@ -115,7 +117,7 @@ func TestNotifyNewlyPending_NoneNewSendsNothing(t *testing.T) {
 	var sent []string
 	n := testNotifier(t, &sent)
 
-	notifyNewlyPending(n, pollResult{items: []pending.PendingConfirmation{{RunID: "r1"}}})
+	notifyNewlyPending(n, pollResult{items: []pending.PendingConfirmation{{RunID: "r1"}}}, func(string) {})
 	if len(sent) != 0 {
 		t.Errorf("notifyNewlyPending() sent %v when nothing was newly pending", sent)
 	}
@@ -175,7 +177,8 @@ func TestDoPoll_NewlyPendingAndStats(t *testing.T) {
 	cfg := config{}
 	cfg.teamLabels.values = []string{"folder:owning-team/ecommerce"}
 
-	res := doPoll(context.Background(), c, st, cfg)
+	viewer := "me"
+	res := doPoll(context.Background(), c, st, cfg, &viewer)
 	if res.err != nil {
 		t.Fatalf("doPoll() error = %v", res.err)
 	}
@@ -201,7 +204,8 @@ func TestDoPoll_PropagatesQueryError(t *testing.T) {
 	c := spaceclient.NewFromSDK(sdk)
 	st := state.New()
 
-	res := doPoll(context.Background(), c, st, config{})
+	viewer := "me"
+	res := doPoll(context.Background(), c, st, config{}, &viewer)
 	if res.err == nil {
 		t.Fatal("doPoll() error = nil, want the query error to propagate")
 	}
@@ -240,7 +244,8 @@ func TestDoPoll_SetsAuthExpiredOnUnauthorizedError(t *testing.T) {
 	c := spaceclient.NewFromSDK(sdk)
 	st := state.New()
 
-	res := doPoll(context.Background(), c, st, config{})
+	viewer := "me"
+	res := doPoll(context.Background(), c, st, config{}, &viewer)
 	if res.err == nil {
 		t.Fatal("doPoll() error = nil, want an error")
 	}
@@ -268,7 +273,8 @@ func TestDoPoll_SetsAuthExpiredOnBareUnauthorizedError(t *testing.T) {
 	c := spaceclient.NewFromSDK(sdk)
 	st := state.New()
 
-	res := doPoll(context.Background(), c, st, config{})
+	viewer := "me"
+	res := doPoll(context.Background(), c, st, config{}, &viewer)
 	if res.err == nil {
 		t.Fatal("doPoll() error = nil, want an error")
 	}
@@ -493,30 +499,230 @@ func TestCRLF_DoesNotDoubleUpExistingCR(t *testing.T) {
 	}
 }
 
-func TestFooter_ContainsKeyStats(t *testing.T) {
-	res := pollResult{polledAt: time.Now(), items: make([]pending.PendingConfirmation, 2), reqTotal: 5, reqWindow: 3}
-	cfg := config{requestBudget: 300, activeInterval: 20 * time.Second, idleInterval: 60 * time.Second}
+func TestFooter(t *testing.T) {
+	polled := time.Date(2026, 1, 1, 9, 30, 0, 0, time.Local)
+	if got, want := footer(polled, 2, 20*time.Second), "polled 09:30:00 · 2 pending · next poll in 20s\n"; got != want {
+		t.Errorf("footer() = %q, want %q", got, want)
+	}
+	if got := footer(polled, 0, 0); strings.Contains(got, "next poll") || strings.Contains(got, "requests") {
+		t.Errorf("footer() = %q, want no countdown or request stats", got)
+	}
+}
 
-	got := footer(res, cfg, 20*time.Second, " · q to quit")
-	for _, want := range []string{"2 pending", "5 total", "3 this hour", "budget 300/hr", "next poll in 20s", "q to quit"} {
+func TestKeyHints(t *testing.T) {
+	if got, want := keyHints(false, false), "[↑↓] move  [↵] open  [a] all team runs  [r] refresh  [?] config  [q] quit\n"; got != want {
+		t.Errorf("keyHints() = %q, want %q", got, want)
+	}
+	if got := keyHints(true, true); !strings.Contains(got, "[a] my runs") || !strings.Contains(got, "[l] relogin") {
+		t.Errorf("keyHints(showAll, authExpired) = %q, want my-runs toggle and relogin", got)
+	}
+}
+
+func TestRenderConfig(t *testing.T) {
+	cfg := config{team: "atlas", activeInterval: 20 * time.Second, idleInterval: time.Minute, requestBudget: 300, remind: 10 * time.Minute}
+	cfg.teamLabels.values = []string{"folder:owning-team/atlas", "folder:collab-team/atlas"}
+	var sent []string
+	got := renderConfig(cfg, "me", false, testNotifier(t, &sent), pollResult{reqWindow: 12, reqTotal: 40}, false)
+	for _, want := range []string{"spacewatch - config", "atlas", "folder:owning-team/atlas, folder:collab-team/atlas", "your runs", "every 10m0s", "12 of 300 budget", "40 since start", "[?] close  [q] quit"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("footer() = %q, missing %q", got, want)
+			t.Errorf("renderConfig() missing %q:\n%s", want, got)
 		}
 	}
 }
 
-func TestOpenCommand(t *testing.T) {
-	if got := openCommand("darwin"); got != "open" {
-		t.Errorf("openCommand(darwin) = %q, want open", got)
+func TestVisibleItems(t *testing.T) {
+	items := []pending.PendingConfirmation{
+		{RunID: "mine", AuthorLogin: "me"},
+		{RunID: "theirs", AuthorLogin: "them"},
 	}
-	if got := openCommand("linux"); got != "xdg-open" {
-		t.Errorf("openCommand(linux) = %q, want xdg-open", got)
+	if got := visibleItems(items, "me", false); len(got) != 1 || got[0].RunID != "mine" {
+		t.Errorf("visibleItems(showAll=false) = %+v, want only mine", got)
+	}
+	if got := visibleItems(items, "me", true); len(got) != 2 {
+		t.Errorf("visibleItems(showAll=true) = %+v, want both", got)
 	}
 }
 
-func TestFooter_OmitsNextPollWhenNoneScheduled(t *testing.T) {
-	got := footer(pollResult{polledAt: time.Now()}, config{requestBudget: 300}, 0, "")
-	if strings.Contains(got, "next poll") {
-		t.Errorf("footer() = %q, want no next-poll text when none is scheduled", got)
+func TestRenderTable_EmptyMineViewHintsToggle(t *testing.T) {
+	if got := renderTable(nil, false, "a", 0, false, false); !strings.Contains(got, "a: show all team runs") {
+		t.Errorf("renderTable() empty mine view = %q, want a hint about the toggle", got)
+	}
+	if got := renderTable(nil, true, "a", 0, false, false); !strings.Contains(got, "no pending confirmations for your team") {
+		t.Errorf("renderTable() empty team view = %q", got)
+	}
+}
+
+func TestNotifyNewlyPending_SendsReminders(t *testing.T) {
+	var sent []string
+	n := testNotifier(t, &sent)
+	res := pollResult{
+		items:     []pending.PendingConfirmation{{RunID: "r1", StackName: "orders-api", Title: "apply", CreatedAt: time.Now().Add(-20 * time.Minute)}},
+		remindIDs: []string{"r1", "not-visible"},
+	}
+	notifyNewlyPending(n, res, func(string) {})
+	if len(sent) != 1 || !strings.Contains(sent[0], "still pending confirmation (20m)") {
+		t.Errorf("sent = %v, want one reminder for orders-api at 20m", sent)
+	}
+}
+
+func TestFrame_OverwritesInPlace(t *testing.T) {
+	got := frame("one\ntwo\n", 80)
+	want := "\x1b[H" + "\x1b[Kone\x1b[K\n" + "\x1b[Ktwo\x1b[K\n" + "\x1b[J"
+	if got != want {
+		t.Errorf("frame() = %q, want %q", got, want)
+	}
+}
+
+func TestFrame_ExactWidthLineKeepsLastCharacter(t *testing.T) {
+	// A line exactly as wide as the terminal leaves the cursor on its last
+	// cell (deferred wrap), so a trailing clear would erase that character.
+	line := strings.Repeat("x", 9) + "Z"
+	colored := ui.Style(line, ui.Bold, true) // escape bytes must not count towards the width
+	for _, in := range []string{line, colored} {
+		got := frame(in+"\n", 10)
+		if strings.Contains(got, "Z"+ansiClearEOL) || strings.Contains(got, "Z"+ui.Reset+ansiClearEOL) {
+			t.Errorf("frame() clears after an exact-width line: %q", got)
+		}
+	}
+	// Two full rows (wrapped exactly) behave the same.
+	if got := frame(strings.Repeat("y", 20)+"\n", 10); strings.Contains(got, "y"+ansiClearEOL) {
+		t.Errorf("frame() clears after a line that wraps exactly at the margin: %q", got)
+	}
+	// A wide character that wraps early still fills both rows exactly.
+	if got := frame("123456789日abcdefgh\n", 10); strings.Contains(got, "h"+ansiClearEOL) {
+		t.Errorf("frame() clears after a line whose wide character wrapped early: %q", got)
+	}
+	// Unknown width: never clear after the text.
+	if got := frame("abc\n", 0); strings.Contains(got, "abc"+ansiClearEOL) {
+		t.Errorf("frame() with unknown width cleared after text: %q", got)
+	}
+}
+
+func TestNotifyNewlyPending_ReportsOnlyDeliveredRuns(t *testing.T) {
+	failing := &notify.Notifier{
+		Stdout:      &bytes.Buffer{},
+		TermProgram: func() string { return "" },
+		GOOS:        "darwin",
+		Run:         func(string, ...string) error { return errors.New("boom") },
+	}
+	res := pollResult{
+		items:           []pending.PendingConfirmation{{RunID: "r1"}, {RunID: "r2"}},
+		newlyPendingIDs: []string{"r1"},
+		remindIDs:       []string{"r2", "hidden"},
+	}
+	var delivered []string
+	notifyNewlyPending(failing, res, func(id string) { delivered = append(delivered, id) })
+	if len(delivered) != 0 {
+		t.Errorf("delivered = %v after failed sends, want none", delivered)
+	}
+
+	var sent []string
+	notifyNewlyPending(testNotifier(t, &sent), res, func(id string) { delivered = append(delivered, id) })
+	if strings.Join(delivered, ",") != "r1,r2" {
+		t.Errorf("delivered = %v, want [r1 r2] (hidden run not in items is skipped)", delivered)
+	}
+}
+
+// viewerAndRunsServer serves the viewer query with viewerResp (and
+// status) and any other query with an empty searchRuns page, counting
+// each kind of request.
+func viewerAndRunsServer(t *testing.T, status int, viewerResp string) (c *spaceclient.Client, viewerCalls, searchCalls *int) {
+	t.Helper()
+	viewerCalls, searchCalls = new(int), new(int)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "viewer") {
+			*viewerCalls++
+			w.WriteHeader(status)
+			fmt.Fprint(w, viewerResp)
+			return
+		}
+		*searchCalls++
+		fmt.Fprint(w, `{"data":{"searchRuns":{"pageInfo":{"endCursor":"","hasNextPage":false},"edges":[]}}}`)
+	}))
+	t.Cleanup(srv.Close)
+	return spaceclient.NewFromSDK(client.New(srv.Client(), fakeSession{endpoint: srv.URL})), viewerCalls, searchCalls
+}
+
+func TestDoPoll_LooksUpAndCachesViewer(t *testing.T) {
+	c, viewerCalls, searchCalls := viewerAndRunsServer(t, http.StatusOK, `{"data":{"viewer":{"id":"georgearnall"}}}`)
+	st := state.New()
+	var viewer string
+
+	for i := 0; i < 2; i++ {
+		if res := doPoll(context.Background(), c, st, config{}, &viewer); res.err != nil {
+			t.Fatalf("doPoll() #%d error = %v", i+1, res.err)
+		}
+	}
+	if viewer != "georgearnall" {
+		t.Errorf("viewer = %q, want georgearnall", viewer)
+	}
+	if *viewerCalls != 1 || *searchCalls != 2 {
+		t.Errorf("viewer queries = %d, search queries = %d; want 1 (cached) and 2", *viewerCalls, *searchCalls)
+	}
+}
+
+func TestDoPoll_ViewerLookupError(t *testing.T) {
+	c, _, searchCalls := viewerAndRunsServer(t, http.StatusInternalServerError, `{"errors":[{"message":"boom"}]}`)
+	var viewer string
+
+	res := doPoll(context.Background(), c, state.New(), config{}, &viewer)
+	if res.err == nil || !strings.Contains(res.err.Error(), "identifying current user") {
+		t.Fatalf("doPoll() error = %v, want an identifying-current-user error", res.err)
+	}
+	if res.authExpired {
+		t.Error("doPoll() authExpired = true for a non-auth error")
+	}
+	if viewer != "" || *searchCalls != 0 {
+		t.Errorf("viewer = %q, search queries = %d; want lookup retried next poll and no search", viewer, *searchCalls)
+	}
+	if res.reqTotal != 1 {
+		t.Errorf("doPoll() reqTotal = %d, want the failed lookup counted", res.reqTotal)
+	}
+}
+
+func TestDoPoll_ViewerLookupAuthExpired(t *testing.T) {
+	c, _, _ := viewerAndRunsServer(t, http.StatusUnauthorized, `{"errors":[{"message":"unauthorized"}]}`)
+	var viewer string
+
+	res := doPoll(context.Background(), c, state.New(), config{}, &viewer)
+	if res.err == nil || !res.authExpired {
+		t.Errorf("doPoll() = err %v, authExpired %v; want an auth-expired error so relogin is offered", res.err, res.authExpired)
+	}
+}
+
+func TestRescheduleForView(t *testing.T) {
+	cfg := config{activeInterval: 20 * time.Second, idleInterval: time.Hour, requestBudget: 300}
+	polled := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
+	idleDeadline := polled.Add(time.Hour)
+	last := pollResult{polledAt: polled}
+
+	if at, ok := rescheduleForView(cfg, last, 2, idleDeadline); !ok || !at.Equal(polled.Add(20*time.Second)) {
+		t.Errorf("revealing runs = (%v, %v), want the active deadline %v", at, ok, polled.Add(20*time.Second))
+	}
+	if _, ok := rescheduleForView(cfg, last, 0, polled.Add(20*time.Second)); ok {
+		t.Error("hiding runs postponed an earlier poll, want it left alone")
+	}
+	if _, ok := rescheduleForView(cfg, pollResult{polledAt: polled, err: errors.New("boom")}, 2, idleDeadline); ok {
+		t.Error("rescheduled after a poll error, want the error backoff kept")
+	}
+	overBudget := pollResult{polledAt: polled, reqWindow: 300}
+	if at, ok := rescheduleForView(cfg, overBudget, 2, idleDeadline); !ok || !at.Equal(polled.Add(lowBudgetFloor)) {
+		t.Errorf("over budget = (%v, %v), want the budget floor %v", at, ok, polled.Add(lowBudgetFloor))
+	}
+	if _, ok := rescheduleForView(cfg, pollResult{}, 2, idleDeadline); ok {
+		t.Error("rescheduled before the first poll")
+	}
+}
+
+func TestRenderConfig_TeamLabelOverride(t *testing.T) {
+	cfg := config{team: "atlas", requestBudget: 300}
+	if err := cfg.teamLabels.Set("custom"); err != nil {
+		t.Fatal(err)
+	}
+	var sent []string
+	got := renderConfig(cfg, "me", false, testNotifier(t, &sent), pollResult{}, false)
+	if strings.Contains(got, "atlas") || !strings.Contains(got, "(custom --team-label)") {
+		t.Errorf("renderConfig() with --team-label override = %q, want the custom label marker, not the team", got)
 	}
 }

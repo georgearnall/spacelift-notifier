@@ -175,6 +175,9 @@ func TestPoll_RealQueryShapeAgainstHTTPServer(t *testing.T) {
 	if !strings.Contains(query, "searchRuns(input: $input)") {
 		t.Errorf("query %q missing searchRuns(input: $input) call", query)
 	}
+	if !strings.Contains(query, "delta{addCount,changeCount,deleteCount}") {
+		t.Errorf("query %q missing delta{addCount,changeCount,deleteCount}", query)
+	}
 
 	vars, _ := gotBody["variables"].(map[string]any)
 	input, _ := vars["input"].(map[string]any)
@@ -231,5 +234,46 @@ func TestPoll_FiltersLabelsServerSide(t *testing.T) {
 	}
 	if strings.Join(got, ",") != strings.Join(cfg.Labels, ",") {
 		t.Errorf("labels predicate = %v, want stringEquals %v", got, cfg.Labels)
+	}
+}
+
+func TestPoll_MapsPlanDelta(t *testing.T) {
+	cfg := labels.Config{Labels: []string{"team"}}
+	withDelta := edge("r1", true, []string{"team"})
+	withDelta.Node.Run.Delta = &delta{AddCount: 2, ChangeCount: 3, DeleteCount: 1}
+	noDelta := edge("r2", true, []string{"team"})
+	var page searchRunsQuery
+	page.SearchRuns.Edges = []runEdge{withDelta, noDelta}
+
+	got, err := Poll(context.Background(), &fakeClient{responses: []searchRunsQuery{page}}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Plan == nil || *got[0].Plan != (Plan{Add: 2, Change: 3, Delete: 1}) {
+		t.Errorf("Plan = %+v, want +2 ~3 -1", got[0].Plan)
+	}
+	if got[1].Plan != nil {
+		t.Errorf("Plan = %+v for a run without a delta, want nil", got[1].Plan)
+	}
+}
+
+func TestIsMine(t *testing.T) {
+	cases := []struct {
+		name string
+		p    PendingConfirmation
+		want bool
+	}{
+		{"commit author", PendingConfirmation{AuthorLogin: "GeorgeArnall", TriggeredBy: "api::oidc::t::commerce"}, true},
+		{"triggered directly", PendingConfirmation{AuthorLogin: "someone", TriggeredBy: "georgearnall"}, true},
+		{"someone else", PendingConfirmation{AuthorLogin: "someone", TriggeredBy: "api::oidc::t::commerce"}, false},
+		{"no author info", PendingConfirmation{}, false},
+	}
+	for _, c := range cases {
+		if got := c.p.IsMine("georgearnall"); got != c.want {
+			t.Errorf("%s: IsMine() = %v, want %v", c.name, got, c.want)
+		}
+	}
+	if (PendingConfirmation{}).IsMine("") {
+		t.Error("IsMine(\"\") = true for empty fields, want false")
 	}
 }
