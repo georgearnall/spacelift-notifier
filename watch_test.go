@@ -690,3 +690,27 @@ func TestDoPoll_ViewerLookupAuthExpired(t *testing.T) {
 		t.Errorf("doPoll() = err %v, authExpired %v; want an auth-expired error so relogin is offered", res.err, res.authExpired)
 	}
 }
+
+func TestRescheduleForView(t *testing.T) {
+	cfg := config{activeInterval: 20 * time.Second, idleInterval: time.Hour, requestBudget: 300}
+	polled := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
+	idleDeadline := polled.Add(time.Hour)
+	last := pollResult{polledAt: polled}
+
+	if at, ok := rescheduleForView(cfg, last, 2, idleDeadline); !ok || !at.Equal(polled.Add(20*time.Second)) {
+		t.Errorf("revealing runs = (%v, %v), want the active deadline %v", at, ok, polled.Add(20*time.Second))
+	}
+	if _, ok := rescheduleForView(cfg, last, 0, polled.Add(20*time.Second)); ok {
+		t.Error("hiding runs postponed an earlier poll, want it left alone")
+	}
+	if _, ok := rescheduleForView(cfg, pollResult{polledAt: polled, err: errors.New("boom")}, 2, idleDeadline); ok {
+		t.Error("rescheduled after a poll error, want the error backoff kept")
+	}
+	overBudget := pollResult{polledAt: polled, reqWindow: 300}
+	if at, ok := rescheduleForView(cfg, overBudget, 2, idleDeadline); !ok || !at.Equal(polled.Add(lowBudgetFloor)) {
+		t.Errorf("over budget = (%v, %v), want the budget floor %v", at, ok, polled.Add(lowBudgetFloor))
+	}
+	if _, ok := rescheduleForView(cfg, pollResult{}, 2, idleDeadline); ok {
+		t.Error("rescheduled before the first poll")
+	}
+}

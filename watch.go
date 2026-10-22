@@ -228,6 +228,23 @@ func nextInterval(cfg config, pendingCount, reqWindow int) time.Duration {
 	return d
 }
 
+// rescheduleForView re-evaluates the poll delay after the view changes,
+// since nextInterval depends on how many runs are visible: revealing
+// pending runs should switch an idle wait to the active cadence. It only
+// ever brings the next poll forward (never postpones it), measured from
+// when the last poll ran, and leaves the error backoff alone. The budget
+// floor still applies through nextInterval.
+func rescheduleForView(cfg config, last pollResult, visible int, nextPollAt time.Time) (time.Time, bool) {
+	if last.polledAt.IsZero() || last.err != nil {
+		return nextPollAt, false
+	}
+	at := last.polledAt.Add(nextInterval(cfg, visible, last.reqWindow))
+	if !at.Before(nextPollAt) {
+		return nextPollAt, false
+	}
+	return at, true
+}
+
 // crlf normalizes line breaks to "\r\n" for output written while the tty
 // is in raw mode (see redraw's call site for why). It only inserts "\r"
 // before a "\n" that doesn't already have one, so it's safe to call on
@@ -542,6 +559,10 @@ func runWatch(cfg config) {
 			case keyToggleAll:
 				showAll = !showAll
 				clampSelection()
+				if at, ok := rescheduleForView(cfg, last, len(visibleItems(last.items, viewer, showAll)), nextPollAt); ok {
+					nextPollAt = at
+					timer.Reset(max(time.Until(at), 0))
+				}
 				redraw()
 			case keyRelogin:
 				var resetTimer, handled bool
