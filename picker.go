@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/georgearnall/spacewatch/internal/teamdiscovery"
 	"github.com/rivo/uniseg"
@@ -192,6 +194,30 @@ func pickTeams(cands []teamdiscovery.Candidate, current []string, note string) (
 		return nil, fmt.Errorf("entering raw mode: %w", err)
 	}
 	defer term.Restore(fd, oldState)
+
+	// Ctrl-C arrives as a key in raw mode, but an external SIGINT/SIGTERM
+	// would otherwise kill the process with the terminal still raw. The
+	// watch loop's own signal handling isn't installed yet at this point.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	stop := make(chan struct{})
+	defer func() {
+		signal.Stop(sigs)
+		close(stop)
+	}()
+	go func() {
+		select {
+		case sig := <-sigs:
+			term.Restore(fd, oldState)
+			fmt.Fprintln(os.Stderr)
+			code := 1
+			if s, ok := sig.(syscall.Signal); ok {
+				code = 128 + int(s)
+			}
+			os.Exit(code)
+		case <-stop:
+		}
+	}()
 
 	in := bufio.NewReader(os.Stdin)
 	s := newPickerState(cands, current, note)
