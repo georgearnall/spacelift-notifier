@@ -329,7 +329,7 @@ func renderConfig(cfg config, viewer string, showAll bool, notifier *notify.Noti
 	b.WriteString(ui.Style("spacewatch", ui.Bold, colorEnabled) + " - config\n\n")
 	section(&b, "SETTINGS", [][2]string{
 		{"Viewer", viewer},
-		{"Team", team},
+		{"Teams", team},
 		{"Labels", strings.Join(cfg.teamLabels.values, ", ")},
 		{"View", view},
 		{"Active poll", cfg.activeInterval.String()},
