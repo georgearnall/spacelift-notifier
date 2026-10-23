@@ -181,13 +181,9 @@ func parseTeamList(s string) []string {
 var errPickerCancelled = errors.New("team selection cancelled")
 
 // pickTeams runs the interactive team picker on stdin/stderr and returns
-// the chosen team slugs.
+// the chosen team slugs. Stdin must be a terminal.
 func pickTeams(cands []teamdiscovery.Candidate, current []string, note string) ([]string, error) {
 	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
-		return nil, errors.New("no team configured, and stdin isn't a terminal to pick one - " +
-			"run interactively once to configure, or pass --team <slug>[,<slug>...] or --team-label")
-	}
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
 		return nil, fmt.Errorf("entering raw mode: %w", err)
