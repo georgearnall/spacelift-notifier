@@ -40,43 +40,62 @@ func TestMatch_NoTeams(t *testing.T) {
 }
 
 type fakeClient struct {
-	resp discoverQuery
-	err  error
-	vars map[string]any
+	resp   discoverQuery
+	counts map[string]int // first label of a count predicate -> filteredCount
+	err    error
+	inputs []SearchSuggestionsInput
 }
 
 func (f *fakeClient) Query(_ context.Context, out any, vars map[string]any) error {
-	f.vars = vars
+	in := vars["input"].(SearchSuggestionsInput)
+	f.inputs = append(f.inputs, in)
 	if f.err != nil {
 		return f.err
 	}
-	*out.(*discoverQuery) = f.resp
+	switch q := out.(type) {
+	case *discoverQuery:
+		*q = f.resp
+	case *countQuery:
+		q.Suggestions.FilteredCount = f.counts[in.Predicates[0].Constraint.StringEquals[0]]
+	}
 	return nil
 }
 
 func TestDiscover(t *testing.T) {
 	var resp discoverQuery
-	resp.Viewer.Teams = []string{"Hydra"}
+	resp.Viewer.Teams = []string{"Hydra", "Prometheus"}
 	resp.Suggestions.Fields = []suggestionField{
 		{Name: "name"},
 		{Name: "label", PossibleValuesString: &stringValues{
-			Values: []string{"folder:owning-team/hydra"},
-			Counts: []int{2},
+			Values: []string{"folder:owning-team/hydra", "folder:owning-team/prometheus", "folder:collab-team/prometheus"},
+			Counts: []int{25, 16, 15},
 		}},
 	}
-	fc := &fakeClient{resp: resp}
+	// Prometheus' labels overlap: 31 label matches, 20 distinct stacks,
+	// which drops it below Hydra.
+	fc := &fakeClient{resp: resp, counts: map[string]int{
+		"folder:owning-team/hydra":      25,
+		"folder:owning-team/prometheus": 20,
+	}}
 
 	got, err := Discover(context.Background(), fc)
 	if err != nil {
 		t.Fatalf("Discover() error = %v", err)
 	}
-	want := []Candidate{{Name: "Hydra", Slugs: []string{"hydra"}, Stacks: 2}}
+	want := []Candidate{
+		{Name: "Hydra", Slugs: []string{"hydra"}, Stacks: 25},
+		{Name: "Prometheus", Slugs: []string{"prometheus"}, Stacks: 20},
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Discover() = %+v, want %+v", got, want)
 	}
-	in, ok := fc.vars["input"].(SearchSuggestionsInput)
-	if !ok || !reflect.DeepEqual(in.Fields, []string{"label"}) {
-		t.Errorf("Discover() input = %#v, want fields [label]", fc.vars["input"])
+
+	if len(fc.inputs) != 3 || !reflect.DeepEqual(fc.inputs[0].Fields, []string{"label"}) {
+		t.Fatalf("Discover() inputs = %+v, want a label suggestions query then one count per candidate", fc.inputs)
+	}
+	wantLabels := []string{"folder:owning-team/prometheus", "folder:collab-team/prometheus"}
+	if got := fc.inputs[1].Predicates[0].Constraint.StringEquals; !reflect.DeepEqual(got, wantLabels) {
+		t.Errorf("count predicate = %v, want %v", got, wantLabels)
 	}
 }
 
