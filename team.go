@@ -27,20 +27,20 @@ func resolveTeamLabels(cfg *config, prompt func() (string, error)) error {
 	}
 
 	if cfg.team != "" {
-		tc.Team = cfg.team // --team explicitly (re)configures
+		tc.Teams = []string{cfg.team} // --team explicitly (re)configures
 	}
-	if tc.Team == "" {
+	if len(tc.Teams) == 0 {
 		team, err := prompt()
 		if err != nil {
 			return err
 		}
-		tc.Team = team
+		tc.Teams = []string{team}
 	}
 	if err := tc.Save(); err != nil {
 		return fmt.Errorf("saving team config: %w", err)
 	}
 
-	cfg.team = tc.Team
+	cfg.team = strings.Join(tc.Teams, ", ")
 	cfg.teamLabels.values = tc.Labels()
 	return nil
 }

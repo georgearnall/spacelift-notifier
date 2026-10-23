@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/georgearnall/spacewatch/internal/teamconfig"
@@ -32,7 +33,7 @@ func TestResolveTeamLabels_ExplicitTeamLabelSkipsConfig(t *testing.T) {
 func TestResolveTeamLabels_LoadsPersistedTeam(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	if err := (&teamconfig.Config{Team: "ecommerce"}).Save(); err != nil {
+	if err := (&teamconfig.Config{Teams: []string{"ecommerce"}}).Save(); err != nil {
 		t.Fatalf("seeding team config: %v", err)
 	}
 
@@ -78,15 +79,15 @@ func TestResolveTeamLabels_PromptsAndPersistsOnFirstRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("teamconfig.Load() error = %v", err)
 	}
-	if tc.Team != "ecommerce" {
-		t.Errorf("persisted Team = %q, want %q", tc.Team, "ecommerce")
+	if !slices.Equal(tc.Teams, []string{"ecommerce"}) {
+		t.Errorf("persisted Teams = %v, want [ecommerce]", tc.Teams)
 	}
 }
 
 func TestResolveTeamLabels_TeamFlagOverwritesPersisted(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	if err := (&teamconfig.Config{Team: "ecommerce"}).Save(); err != nil {
+	if err := (&teamconfig.Config{Teams: []string{"ecommerce"}}).Save(); err != nil {
 		t.Fatalf("seeding team config: %v", err)
 	}
 
@@ -104,8 +105,8 @@ func TestResolveTeamLabels_TeamFlagOverwritesPersisted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("teamconfig.Load() error = %v", err)
 	}
-	if tc.Team != "atlas" {
-		t.Errorf("persisted Team = %q, want %q (--team should overwrite)", tc.Team, "atlas")
+	if !slices.Equal(tc.Teams, []string{"atlas"}) {
+		t.Errorf("persisted Teams = %v, want [atlas] (--team should overwrite)", tc.Teams)
 	}
 }
 
@@ -125,8 +126,8 @@ func TestResolveTeamLabels_PromptErrorPropagatesAndSavesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("teamconfig.Load() error = %v", err)
 	}
-	if tc.Team != "" {
-		t.Errorf("Team = %q, want nothing persisted after a prompt error", tc.Team)
+	if len(tc.Teams) != 0 {
+		t.Errorf("Teams = %v, want nothing persisted after a prompt error", tc.Teams)
 	}
 }
 
