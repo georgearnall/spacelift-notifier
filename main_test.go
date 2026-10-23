@@ -114,6 +114,9 @@ func TestParseFlags_RejectsInvalidValues(t *testing.T) {
 		{"--remind", "-1m"},
 		{"extra-arg", "--once"},
 		{"--once", "extra-arg"},
+		{"--team", " , "},
+		{"--pick-team", "--team", "atlas"},
+		{"--pick-team", "--team-label", "x"},
 	}
 	for _, args := range cases {
 		if _, err := parseFlags(args); err == nil {

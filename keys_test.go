@@ -16,6 +16,7 @@ func TestDecodeKey(t *testing.T) {
 		{"a toggles all", []byte("a"), keyToggleAll},
 		{"r refreshes", []byte("r"), keyRefresh},
 		{"? toggles config", []byte("?"), keyConfig},
+		{"space toggles a picker row", []byte(" "), keySpace},
 		{"up arrow", []byte{0x1b, '[', 'A'}, keyUp},
 		{"down arrow", []byte{0x1b, '[', 'B'}, keyDown},
 		{"unrecognized letter", []byte("x"), keyNone},

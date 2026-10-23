@@ -31,11 +31,12 @@ spacewatch [flags]
 
 See `spacewatch --help` for the full flag list. Notably:
 
-- `--team` - your Spacelift team name. Persisted to
-  `~/.config/spacewatch/config.json` so you only enter it once, and
-  used to watch both label conventions Spacelift has for team ownership:
-  stacks your team *owns* (`folder:owning-team/<team>`) and stacks it
-  *collaborates on* (`folder:collab-team/<team>`).
+- `--team` - comma-separated Spacelift team slugs, e.g. `--team atlas,ecommerce`.
+  Persisted to `~/.config/spacewatch/config.json` (replacing whatever was
+  stored) and used to watch both label conventions Spacelift has for team
+  ownership: stacks a team *owns* (`folder:owning-team/<slug>`) and stacks
+  it *collaborates on* (`folder:collab-team/<slug>`).
+- `--pick-team` - open the team picker again to change the stored teams.
 - `--team-label` (repeatable) - exact stack label to match instead, for full
   manual control. Bypasses `--team`/`config.json` entirely.
 - `--all` - show every pending run on your team's stacks. By default only
@@ -46,15 +47,25 @@ See `spacewatch --help` for the full flag list. Notably:
 - `--version` - print the version.
 
 If you haven't configured a team yet and don't pass `--team`/`--team-label`,
-the tool prompts for your team name interactively the first time it runs,
-then remembers it for next time:
+the tool shows a picker the first time it runs, then remembers your choice.
+It lists your Spacelift identity-provider groups that match a team label on
+at least one stack, with the matching slugs and stack counts:
 
 ```
 $ spacewatch --once
-No team configured. Enter your Spacelift team name (used in folder:owning-team/<name> and folder:collab-team/<name> labels): ecommerce
+Select the Spacelift teams to watch (↑/↓ move, space toggle, enter confirm, q quit)
+> [ ] AgentTools  (agenttools, agent-tools · 115 stacks)
+  [x] New Verticals & Insurance  (new-verticals-insurance · 43 stacks)
+  [ ] Hydra  (hydra · 2 stacks)
+  + Type team slugs manually...
 ```
 
-To change the stored team later, pass `--team` again:
+Groups are matched to labels ignoring case and punctuation, so one group can
+cover several slug spellings. If your team is missing or matched wrongly,
+choose the last row to type slugs in yourself.
+
+To change the stored teams later, run `spacewatch --pick-team`, or set them
+directly:
 
 ```
 spacewatch --team atlas

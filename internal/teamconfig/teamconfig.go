@@ -1,6 +1,6 @@
-// Package teamconfig persists the caller's Spacelift team name, so it only
-// has to be entered once, and derives the exact-match stack labels for both
-// the "owning" and "collaborator" label conventions from it.
+// Package teamconfig persists the caller's Spacelift team slugs, so they
+// only have to be chosen once, and derives the exact-match stack labels for
+// both the "owning" and "collaborator" label conventions from them.
 package teamconfig
 
 import (
@@ -15,21 +15,26 @@ import (
 
 // Config is the on-disk team configuration.
 type Config struct {
-	Team string `json:"team"`
+	Teams []string `json:"teams"`
+}
+
+// fileFormat is what's actually read from disk: Teams plus the legacy
+// single-team field written by earlier versions, folded into Teams on Load.
+type fileFormat struct {
+	Teams []string `json:"teams"`
+	Team  string   `json:"team"`
 }
 
 // Labels derives the exact-match stack labels that mark a stack as
-// belonging to Team, covering both label conventions Spacelift uses: stacks
-// the team owns, and stacks the team merely collaborates on. Returns nil if
-// no team is configured.
+// belonging to one of Teams, covering both label conventions Spacelift
+// uses: stacks a team owns, and stacks it merely collaborates on. Returns
+// nil if no team is configured.
 func (c *Config) Labels() []string {
-	if c.Team == "" {
-		return nil
+	var out []string
+	for _, t := range c.Teams {
+		out = append(out, "folder:owning-team/"+t, "folder:collab-team/"+t)
 	}
-	return []string{
-		"folder:owning-team/" + c.Team,
-		"folder:collab-team/" + c.Team,
-	}
+	return out
 }
 
 // path returns where config.json lives.
@@ -57,11 +62,14 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("reading team config file %s: %w", p, err)
 	}
 
-	var c Config
-	if err := json.Unmarshal(data, &c); err != nil {
+	var f fileFormat
+	if err := json.Unmarshal(data, &f); err != nil {
 		return nil, fmt.Errorf("parsing team config file %s: %w", p, err)
 	}
-	return &c, nil
+	if len(f.Teams) == 0 && f.Team != "" {
+		f.Teams = []string{f.Team}
+	}
+	return &Config{Teams: f.Teams}, nil
 }
 
 // Save writes the team config to disk atomically, so a crash mid-write can

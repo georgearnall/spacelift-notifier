@@ -1,16 +1,18 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/georgearnall/spacewatch/internal/teamconfig"
 )
 
-func failIfCalled(t *testing.T) func() (string, error) {
-	return func() (string, error) {
-		t.Fatal("prompt should not have been called")
-		return "", nil
+func failIfCalled(t *testing.T) func([]string) ([]string, error) {
+	return func([]string) ([]string, error) {
+		t.Fatal("pick should not have been called")
+		return nil, nil
 	}
 }
 
@@ -32,7 +34,7 @@ func TestResolveTeamLabels_ExplicitTeamLabelSkipsConfig(t *testing.T) {
 func TestResolveTeamLabels_LoadsPersistedTeam(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	if err := (&teamconfig.Config{Team: "ecommerce"}).Save(); err != nil {
+	if err := (&teamconfig.Config{Teams: []string{"ecommerce"}}).Save(); err != nil {
 		t.Fatalf("seeding team config: %v", err)
 	}
 
@@ -57,9 +59,9 @@ func TestResolveTeamLabels_PromptsAndPersistsOnFirstRun(t *testing.T) {
 
 	cfg := config{}
 	prompted := false
-	prompt := func() (string, error) {
+	prompt := func([]string) ([]string, error) {
 		prompted = true
-		return "ecommerce", nil
+		return []string{"ecommerce"}, nil
 	}
 
 	if err := resolveTeamLabels(&cfg, prompt); err != nil {
@@ -78,15 +80,15 @@ func TestResolveTeamLabels_PromptsAndPersistsOnFirstRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("teamconfig.Load() error = %v", err)
 	}
-	if tc.Team != "ecommerce" {
-		t.Errorf("persisted Team = %q, want %q", tc.Team, "ecommerce")
+	if !slices.Equal(tc.Teams, []string{"ecommerce"}) {
+		t.Errorf("persisted Teams = %v, want [ecommerce]", tc.Teams)
 	}
 }
 
 func TestResolveTeamLabels_TeamFlagOverwritesPersisted(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	if err := (&teamconfig.Config{Team: "ecommerce"}).Save(); err != nil {
+	if err := (&teamconfig.Config{Teams: []string{"ecommerce"}}).Save(); err != nil {
 		t.Fatalf("seeding team config: %v", err)
 	}
 
@@ -104,8 +106,8 @@ func TestResolveTeamLabels_TeamFlagOverwritesPersisted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("teamconfig.Load() error = %v", err)
 	}
-	if tc.Team != "atlas" {
-		t.Errorf("persisted Team = %q, want %q (--team should overwrite)", tc.Team, "atlas")
+	if !slices.Equal(tc.Teams, []string{"atlas"}) {
+		t.Errorf("persisted Teams = %v, want [atlas] (--team should overwrite)", tc.Teams)
 	}
 }
 
@@ -115,7 +117,7 @@ func TestResolveTeamLabels_PromptErrorPropagatesAndSavesNothing(t *testing.T) {
 
 	cfg := config{}
 	wantErr := errors.New("boom")
-	prompt := func() (string, error) { return "", wantErr }
+	prompt := func([]string) ([]string, error) { return nil, wantErr }
 
 	if err := resolveTeamLabels(&cfg, prompt); err != wantErr {
 		t.Fatalf("resolveTeamLabels() error = %v, want %v", err, wantErr)
@@ -125,15 +127,73 @@ func TestResolveTeamLabels_PromptErrorPropagatesAndSavesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("teamconfig.Load() error = %v", err)
 	}
-	if tc.Team != "" {
-		t.Errorf("Team = %q, want nothing persisted after a prompt error", tc.Team)
+	if len(tc.Teams) != 0 {
+		t.Errorf("Teams = %v, want nothing persisted after a prompt error", tc.Teams)
 	}
 }
 
-func TestPromptForTeam_NonTerminalStdinReturnsError(t *testing.T) {
-	// Under `go test`, stdin is not a terminal, so promptForTeam should
-	// return an error rather than blocking on a read that will never come.
-	if _, err := promptForTeam(); err == nil {
-		t.Error("promptForTeam() on non-terminal stdin: got nil error, want one")
+func TestResolveTeamLabels_TeamFlagAcceptsList(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg := config{team: "atlas, ecommerce"}
+	if err := resolveTeamLabels(&cfg, failIfCalled(t)); err != nil {
+		t.Fatalf("resolveTeamLabels() error = %v", err)
+	}
+
+	want := []string{
+		"folder:owning-team/atlas", "folder:collab-team/atlas",
+		"folder:owning-team/ecommerce", "folder:collab-team/ecommerce",
+	}
+	if !slices.Equal(cfg.teamLabels.values, want) {
+		t.Errorf("teamLabels.values = %v, want %v", cfg.teamLabels.values, want)
+	}
+}
+
+func TestResolveTeamLabels_PickTeamRepicksWithCurrentTeams(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	if err := (&teamconfig.Config{Teams: []string{"ecommerce"}}).Save(); err != nil {
+		t.Fatalf("seeding team config: %v", err)
+	}
+
+	var gotCurrent []string
+	pick := func(current []string) ([]string, error) {
+		gotCurrent = current
+		return []string{"atlas"}, nil
+	}
+	cfg := config{pickTeam: true}
+	if err := resolveTeamLabels(&cfg, pick); err != nil {
+		t.Fatalf("resolveTeamLabels() error = %v", err)
+	}
+	if !slices.Equal(gotCurrent, []string{"ecommerce"}) {
+		t.Errorf("pick got current = %v, want [ecommerce]", gotCurrent)
+	}
+
+	tc, err := teamconfig.Load()
+	if err != nil {
+		t.Fatalf("teamconfig.Load() error = %v", err)
+	}
+	if !slices.Equal(tc.Teams, []string{"atlas"}) {
+		t.Errorf("persisted Teams = %v, want [atlas]", tc.Teams)
+	}
+}
+
+type nopQueryer struct{}
+
+func (nopQueryer) Query(context.Context, any, map[string]any) error { return nil }
+
+func TestTeamPicker_NonTerminalStdinFailsBeforeBuildingClient(t *testing.T) {
+	// Under `go test`, stdin is not a terminal, so the picker should return
+	// an error rather than blocking, and before building a client.
+	built := false
+	newClient := func() (teamQueryer, error) {
+		built = true
+		return nopQueryer{}, nil
+	}
+	if _, err := teamPicker(context.Background(), newClient)(nil); err == nil {
+		t.Error("teamPicker() on non-terminal stdin: got nil error, want one")
+	}
+	if built {
+		t.Error("teamPicker() built a client, want it to fail before any session setup")
 	}
 }

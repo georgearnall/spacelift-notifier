@@ -7,10 +7,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"sync"
 	"time"
+
+	"github.com/georgearnall/spacewatch/internal/spaceclient"
 )
 
 const helpText = `spacewatch - watch Spacelift for stack runs awaiting confirmation
@@ -19,13 +24,14 @@ Usage:
   spacewatch [flags]
 
 Flags:
-  --team value              Your Spacelift team name. Persisted to config.json
-                            and used to watch both folder:owning-team/<value>
-                            and folder:collab-team/<value> stack labels.
-                            Updates the persisted team if one already exists.
-                            If neither this nor --team-label is given and no
-                            team is configured yet, you'll be prompted for one
-                            (once) on startup.
+  --team value              Comma-separated Spacelift team slugs. Persisted to
+                            config.json and used to watch both
+                            folder:owning-team/<slug> and folder:collab-team/<slug>
+                            stack labels. Replaces the persisted teams. If
+                            neither this nor --team-label is given and no team
+                            is configured yet, you'll pick from your Spacelift
+                            teams (once) on startup.
+  --pick-team               Pick your teams again, even if some are configured
   --team-label value        Stack label that must match exactly for a stack to
                             be considered yours (repeatable; supplying this flag
                             replaces the default rather than adding to it, and
@@ -72,6 +78,7 @@ func (s *stringList) Set(v string) error {
 
 type config struct {
 	team           string
+	pickTeam       bool
 	teamLabels     stringList
 	activeInterval time.Duration
 	idleInterval   time.Duration
@@ -97,7 +104,8 @@ func parseFlags(args []string) (config, error) {
 
 	fs := flag.NewFlagSet("spacewatch", flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, helpText) }
-	fs.StringVar(&cfg.team, "team", "", "your Spacelift team name (persisted; derives folder:owning-team/<name> and folder:collab-team/<name>)")
+	fs.StringVar(&cfg.team, "team", "", "comma-separated Spacelift team slugs (persisted; derives folder:owning-team/<slug> and folder:collab-team/<slug>)")
+	fs.BoolVar(&cfg.pickTeam, "pick-team", false, "pick your teams again, even if some are configured")
 	fs.Var(&cfg.teamLabels, "team-label", "exact stack label to match as 'your team' (repeatable; bypasses --team/config.json)")
 	fs.DurationVar(&cfg.activeInterval, "interval", cfg.activeInterval, "poll interval while runs are pending")
 	fs.DurationVar(&cfg.idleInterval, "idle-interval", cfg.idleInterval, "poll interval while idle")
@@ -131,6 +139,12 @@ func validate(cfg config, positional []string) error {
 	if len(positional) > 0 {
 		return fmt.Errorf("unexpected argument %q (see --help)", positional[0])
 	}
+	if cfg.team != "" && len(parseTeamList(cfg.team)) == 0 {
+		return fmt.Errorf("--team needs at least one team slug, got %q", cfg.team)
+	}
+	if cfg.pickTeam && (cfg.team != "" || cfg.teamLabels.userSet) {
+		return errors.New("--pick-team can't be combined with --team or --team-label")
+	}
 	if cfg.activeInterval < minInterval {
 		return fmt.Errorf("--interval must be at least %s, got %s", minInterval, cfg.activeInterval)
 	}
@@ -159,13 +173,23 @@ func main() {
 		return
 	}
 
-	if err := resolveTeamLabels(&cfg, promptForTeam); err != nil {
+	// Built lazily and shared: team discovery may need it first, but a run
+	// that can't resolve its teams should fail before any session setup.
+	ctx := context.Background()
+	client := sync.OnceValues(func() (*spaceclient.Client, error) { return spaceclient.New(ctx) })
+	newTeamClient := func() (teamQueryer, error) { return client() }
+
+	if err := resolveTeamLabels(&cfg, teamPicker(ctx, newTeamClient)); err != nil {
+		fail("%v", err)
+	}
+	c, err := client()
+	if err != nil {
 		fail("%v", err)
 	}
 
 	if cfg.once {
-		runOnce(cfg)
+		runOnce(ctx, c, cfg)
 		return
 	}
-	runWatch(cfg)
+	runWatch(ctx, c, cfg)
 }
