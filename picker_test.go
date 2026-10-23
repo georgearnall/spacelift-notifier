@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"slices"
 	"strings"
 	"testing"
@@ -14,13 +15,27 @@ var testCandidates = []teamdiscovery.Candidate{
 }
 
 func TestNewPickerState_PreselectsCurrentTeams(t *testing.T) {
-	s := newPickerState(testCandidates, []string{"agent-tools", "atlas"}, "")
+	s := newPickerState(testCandidates, []string{"agent-tools", "agenttools", "atlas"}, "")
 
 	if got, want := s.selectedSlugs(), []string{"agenttools", "agent-tools", "atlas"}; !slices.Equal(got, want) {
 		t.Errorf("selectedSlugs() = %v, want %v", got, want)
 	}
+	if !s.items[0].selected {
+		t.Error("AgentTools row not pre-selected, want it selected since all its slugs are current")
+	}
 	if last := s.items[len(s.items)-1]; !last.manual || last.name != "atlas" {
 		t.Errorf("last item = %+v, want manual row for atlas", last)
+	}
+}
+
+func TestNewPickerState_PartialMatchKeepsExactSlugs(t *testing.T) {
+	s := newPickerState(testCandidates, []string{"agent-tools"}, "")
+
+	if got, want := s.selectedSlugs(), []string{"agent-tools"}; !slices.Equal(got, want) {
+		t.Errorf("selectedSlugs() = %v, want %v (confirming must not add agenttools)", got, want)
+	}
+	if s.items[0].selected {
+		t.Error("AgentTools row pre-selected, want only a manual agent-tools row")
 	}
 }
 
@@ -84,13 +99,83 @@ func TestPickerAddManual(t *testing.T) {
 	s := newPickerState(testCandidates, nil, "")
 	s.cursor = len(s.items)
 
-	s.addManual([]string{"agent-tools", "atlas", "atlas"})
+	s.addManual([]string{"agent-tools", "new-verticals-insurance", "atlas", "atlas"})
 
-	if got, want := s.selectedSlugs(), []string{"agenttools", "agent-tools", "atlas"}; !slices.Equal(got, want) {
+	if got, want := s.selectedSlugs(), []string{"new-verticals-insurance", "agent-tools", "atlas"}; !slices.Equal(got, want) {
 		t.Errorf("selectedSlugs() = %v, want %v", got, want)
 	}
-	if len(s.items) != 3 {
-		t.Errorf("items = %+v, want one manual row added for atlas", s.items)
+	if s.items[0].selected {
+		t.Error("AgentTools row selected, want typing agent-tools to select only that slug")
+	}
+	if len(s.items) != 4 {
+		t.Errorf("items = %+v, want manual rows added for agent-tools and atlas only", s.items)
+	}
+}
+
+func TestReadKey_LeavesFollowingBytesBuffered(t *testing.T) {
+	r := bufio.NewReader(strings.NewReader("\x1b[B\ratlas\n"))
+
+	for _, want := range []key{keyDown, keyEnter} {
+		got, err := readKey(r)
+		if err != nil || got != want {
+			t.Fatalf("readKey() = %v, %v; want %v", got, err, want)
+		}
+	}
+	line, err := r.ReadString('\n')
+	if err != nil || line != "atlas\n" {
+		t.Errorf("rest = %q, %v; want the pasted slug still buffered", line, err)
+	}
+}
+
+func TestReadLine(t *testing.T) {
+	r := bufio.NewReader(strings.NewReader("atlas\rnext\r\nlast\n"))
+	for _, want := range []string{"atlas", "next", "last"} {
+		got, err := readLine(r)
+		if err != nil || got != want {
+			t.Fatalf("readLine() = %q, %v; want %q", got, err, want)
+		}
+	}
+}
+
+func TestReadKey_LoneEscDoesNotBlock(t *testing.T) {
+	// An io.Reader that fails the test if read again after the Esc.
+	r := bufio.NewReader(&oneShotReader{data: []byte{0x1b}, t: t})
+	if got, err := readKey(r); err != nil || got != keyNone {
+		t.Errorf("readKey() = %v, %v; want keyNone", got, err)
+	}
+}
+
+type oneShotReader struct {
+	data []byte
+	t    *testing.T
+	done bool
+}
+
+func (o *oneShotReader) Read(p []byte) (int, error) {
+	if o.done {
+		o.t.Fatal("readKey read past a lone Esc, which would block on a terminal")
+	}
+	o.done = true
+	return copy(p, o.data), nil
+}
+
+func TestPhysicalRows(t *testing.T) {
+	cases := []struct {
+		line string
+		cols int
+		want int
+	}{
+		{"", 80, 1},
+		{"abc", 3, 1},
+		{"abcd", 3, 2},
+		{"abcdefg", 3, 3},
+		{"abcd", 0, 1},
+		{"·→↓", 2, 2},
+	}
+	for _, c := range cases {
+		if got := physicalRows(c.line, c.cols); got != c.want {
+			t.Errorf("physicalRows(%q, %d) = %d, want %d", c.line, c.cols, got, c.want)
+		}
 	}
 }
 

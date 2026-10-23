@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/georgearnall/spacewatch/internal/teamdiscovery"
+	"github.com/rivo/uniseg"
 	"golang.org/x/term"
 )
 
@@ -41,17 +42,18 @@ const (
 )
 
 // newPickerState builds the picker rows from discovered candidates,
-// pre-selecting any row covering one of current, and adding current slugs
-// no candidate covers as already-selected manual rows.
+// pre-selecting a row only when current holds all of its slugs (so
+// confirming never adds a slug that wasn't chosen), and adding the rest of
+// current as already-selected manual rows.
 func newPickerState(cands []teamdiscovery.Candidate, current []string, note string) pickerState {
 	s := pickerState{note: note}
 	covered := map[string]bool{}
 	for _, c := range cands {
 		it := pickerItem{name: c.Name, slugs: c.Slugs, stacks: c.Stacks}
-		for _, slug := range c.Slugs {
-			covered[slug] = true
-			if slices.Contains(current, slug) {
-				it.selected = true
+		it.selected = !slices.ContainsFunc(c.Slugs, func(slug string) bool { return !slices.Contains(current, slug) })
+		if it.selected {
+			for _, slug := range c.Slugs {
+				covered[slug] = true
 			}
 		}
 		s.items = append(s.items, it)
@@ -100,11 +102,12 @@ func (s *pickerState) apply(k key) pickerAction {
 	return pickerContinue
 }
 
-// addManual selects each slug, adding a manual row for any not already
-// listed, and moves the cursor back onto the list.
+// addManual selects each slug, adding a manual row for any without a row
+// of its own. A discovered row covering several slugs isn't reused, so
+// typing one slug selects exactly that slug.
 func (s *pickerState) addManual(slugs []string) {
 	for _, slug := range slugs {
-		i := slices.IndexFunc(s.items, func(it pickerItem) bool { return slices.Contains(it.slugs, slug) })
+		i := slices.IndexFunc(s.items, func(it pickerItem) bool { return slices.Equal(it.slugs, []string{slug}) })
 		if i >= 0 {
 			s.items[i].selected = true
 			continue
@@ -192,44 +195,118 @@ func pickTeams(cands []teamdiscovery.Candidate, current []string, note string) (
 
 	in := bufio.NewReader(os.Stdin)
 	s := newPickerState(cands, current, note)
-	lines := draw(os.Stderr, s, 0)
-	buf := make([]byte, 64)
+	rows := draw(os.Stderr, s, 0)
 	for {
-		n, err := in.Read(buf)
+		// One key per read, so bytes typed straight after the key that opens
+		// manual entry stay buffered for the line prompt below.
+		k, err := readKey(in)
 		if err != nil {
 			return nil, fmt.Errorf("reading keys: %w", err)
 		}
-		for _, k := range decodeKeys(buf[:n]) {
-			switch s.apply(k) {
-			case pickerDone:
-				return s.selectedSlugs(), nil
-			case pickerAbort:
-				return nil, errPickerCancelled
-			case pickerManual:
-				term.Restore(fd, oldState)
-				fmt.Fprint(os.Stderr, "Team slug(s), comma-separated (as in folder:owning-team/<slug>): ")
-				line, err := in.ReadString('\n')
-				if err != nil {
-					return nil, fmt.Errorf("reading team slugs: %w", err)
-				}
-				if _, err := term.MakeRaw(fd); err != nil {
-					return nil, fmt.Errorf("entering raw mode: %w", err)
-				}
-				s.addManual(parseTeamList(line))
-				lines++ // the prompt line now sits below the picker
+		switch s.apply(k) {
+		case pickerDone:
+			return s.selectedSlugs(), nil
+		case pickerAbort:
+			return nil, errPickerCancelled
+		case pickerManual:
+			term.Restore(fd, oldState)
+			const prompt = "Team slug(s), comma-separated (as in folder:owning-team/<slug>): "
+			fmt.Fprint(os.Stderr, prompt)
+			line, err := readLine(in)
+			if err != nil {
+				return nil, fmt.Errorf("reading team slugs: %w", err)
 			}
+			if _, err := term.MakeRaw(fd); err != nil {
+				return nil, fmt.Errorf("entering raw mode: %w", err)
+			}
+			s.addManual(parseTeamList(line))
+			// The prompt and its echoed input now sit below the picker.
+			rows += physicalRows(prompt+line, stderrWidth())
 		}
-		lines = draw(os.Stderr, s, lines)
+		rows = draw(os.Stderr, s, rows)
 	}
 }
 
-// draw redraws the picker over the prevLines lines it last occupied and
-// returns how many lines it occupies now.
-func draw(w io.Writer, s pickerState, prevLines int) int {
+// readLine reads up to a line ending, accepting \r as well as \n: input
+// typed before the terminal left raw mode is still buffered with the raw
+// \r Enter sends, rather than the \n the terminal translates it to.
+func readLine(r *bufio.Reader) (string, error) {
+	var b strings.Builder
+	for {
+		c, err := r.ReadByte()
+		if err != nil {
+			return "", err
+		}
+		switch c {
+		case '\r':
+			if r.Buffered() > 0 {
+				if next, _ := r.Peek(1); next[0] == '\n' {
+					r.Discard(1)
+				}
+			}
+			return b.String(), nil
+		case '\n':
+			return b.String(), nil
+		}
+		b.WriteByte(c)
+	}
+}
+
+// readKey reads one keypress: a single byte, or a three-byte CSI sequence
+// such as an arrow key.
+func readKey(r *bufio.Reader) (key, error) {
+	b, err := r.ReadByte()
+	if err != nil {
+		return keyNone, err
+	}
+	seq := []byte{b}
+	// Only bytes already read are checked: an arrow key's sequence arrives
+	// in one read, and peeking further would block on a lone Esc.
+	if b == 0x1b && r.Buffered() >= 2 {
+		if next, _ := r.Peek(2); next[0] == '[' {
+			seq = append(seq, next...)
+			r.Discard(2)
+		}
+	}
+	return decodeKey(seq), nil
+}
+
+// draw redraws the picker over the prevRows terminal rows it last
+// occupied and returns how many it occupies now.
+func draw(w io.Writer, s pickerState, prevRows int) int {
 	out := renderPicker(s)
-	if prevLines > 0 {
-		fmt.Fprintf(w, "\x1b[%dF\x1b[J", prevLines) // up to the picker's first line, clear below
+	if prevRows > 0 {
+		fmt.Fprintf(w, "\x1b[%dF\x1b[J", prevRows) // up to the picker's first row, clear below
 	}
 	fmt.Fprint(w, out)
-	return strings.Count(out, "\n")
+	cols := stderrWidth()
+	rows := 0
+	for _, line := range strings.SplitAfter(out, "\n") {
+		if line != "" {
+			rows += physicalRows(strings.TrimRight(line, "\r\n"), cols)
+		}
+	}
+	return rows
+}
+
+// physicalRows returns how many terminal rows line takes when written
+// from column 0 of a terminal cols wide, counting wrapping. cols <= 0
+// means unknown, treated as no wrapping.
+func physicalRows(line string, cols int) int {
+	w := uniseg.StringWidth(line)
+	if cols <= 0 || w <= cols {
+		return 1
+	}
+	return (w + cols - 1) / cols
+}
+
+// stderrWidth returns stderr's width in columns, or 0 if unknown. The
+// picker draws on stderr, so stdout's width (ui.TerminalWidth) may not
+// apply.
+func stderrWidth() int {
+	w, _, err := term.GetSize(int(os.Stderr.Fd()))
+	if err != nil {
+		return 0
+	}
+	return w
 }
