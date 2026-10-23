@@ -7,10 +7,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/georgearnall/spacewatch/internal/spaceclient"
 )
 
 const helpText = `spacewatch - watch Spacelift for stack runs awaiting confirmation
@@ -159,13 +162,19 @@ func main() {
 		return
 	}
 
+	ctx := context.Background()
+	c, err := spaceclient.New(ctx)
+	if err != nil {
+		fail("%v", err)
+	}
+
 	if err := resolveTeamLabels(&cfg, promptForTeam); err != nil {
 		fail("%v", err)
 	}
 
 	if cfg.once {
-		runOnce(cfg)
+		runOnce(ctx, c, cfg)
 		return
 	}
-	runWatch(cfg)
+	runWatch(ctx, c, cfg)
 }

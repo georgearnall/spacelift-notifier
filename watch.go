@@ -378,12 +378,7 @@ func frame(s string, cols int) string {
 	return b.String()
 }
 
-func runOnce(cfg config) {
-	ctx := context.Background()
-	c, err := spaceclient.New(ctx)
-	if err != nil {
-		fail("%v", err)
-	}
+func runOnce(ctx context.Context, c *spaceclient.Client, cfg config) {
 	st, err := state.Load()
 	if err != nil {
 		fail("loading state: %v", err)
@@ -410,12 +405,7 @@ func runOnce(cfg config) {
 	fmt.Print(ui.Style(footer(res.polledAt, len(res.items), 0), ui.Dim, colorEnabled))
 }
 
-func runWatch(cfg config) {
-	ctx := context.Background()
-	c, err := spaceclient.New(ctx)
-	if err != nil {
-		fail("%v", err)
-	}
+func runWatch(ctx context.Context, c *spaceclient.Client, cfg config) {
 	st, err := state.Load()
 	if err != nil {
 		fail("loading state: %v", err)
