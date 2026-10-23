@@ -178,21 +178,22 @@ func TestResolveTeamLabels_PickTeamRepicksWithCurrentTeams(t *testing.T) {
 	}
 }
 
-type queryCounter struct{ calls int }
+type nopQueryer struct{}
 
-func (q *queryCounter) Query(context.Context, any, map[string]any) error {
-	q.calls++
-	return nil
-}
+func (nopQueryer) Query(context.Context, any, map[string]any) error { return nil }
 
-func TestTeamPicker_NonTerminalStdinReturnsErrorWithoutQuerying(t *testing.T) {
+func TestTeamPicker_NonTerminalStdinFailsBeforeBuildingClient(t *testing.T) {
 	// Under `go test`, stdin is not a terminal, so the picker should return
-	// an error rather than blocking, and before spending a request.
-	qc := &queryCounter{}
-	if _, err := teamPicker(context.Background(), qc)(nil); err == nil {
+	// an error rather than blocking, and before building a client.
+	built := false
+	newClient := func() (teamQueryer, error) {
+		built = true
+		return nopQueryer{}, nil
+	}
+	if _, err := teamPicker(context.Background(), newClient)(nil); err == nil {
 		t.Error("teamPicker() on non-terminal stdin: got nil error, want one")
 	}
-	if qc.calls != 0 {
-		t.Errorf("teamPicker() made %d queries, want 0", qc.calls)
+	if built {
+		t.Error("teamPicker() built a client, want it to fail before any session setup")
 	}
 }

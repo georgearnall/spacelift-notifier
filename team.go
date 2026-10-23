@@ -49,14 +49,19 @@ func resolveTeamLabels(cfg *config, pick func(current []string) ([]string, error
 }
 
 // teamPicker returns a pick function for resolveTeamLabels that discovers
-// the caller's teams through c and lets them choose interactively.
-func teamPicker(ctx context.Context, c teamQueryer) func(current []string) ([]string, error) {
+// the caller's teams through the client newClient returns and lets them
+// choose interactively.
+func teamPicker(ctx context.Context, newClient func() (teamQueryer, error)) func(current []string) ([]string, error) {
 	return func(current []string) ([]string, error) {
-		// Checked before discovery so a non-interactive run doesn't spend a
-		// request on a picker it can't show.
+		// Checked before building the client, whose session setup can
+		// itself make requests, so a non-interactive run fails fast.
 		if !term.IsTerminal(int(os.Stdin.Fd())) {
 			return nil, errors.New("no team configured, and stdin isn't a terminal to pick one - " +
 				"run interactively once to configure, or pass --team <slug>[,<slug>...] or --team-label")
+		}
+		c, err := newClient()
+		if err != nil {
+			return nil, err
 		}
 
 		var note string

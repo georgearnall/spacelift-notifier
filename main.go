@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/georgearnall/spacewatch/internal/spaceclient"
@@ -172,13 +173,17 @@ func main() {
 		return
 	}
 
+	// Built lazily and shared: team discovery may need it first, but a run
+	// that can't resolve its teams should fail before any session setup.
 	ctx := context.Background()
-	c, err := spaceclient.New(ctx)
-	if err != nil {
+	client := sync.OnceValues(func() (*spaceclient.Client, error) { return spaceclient.New(ctx) })
+	newTeamClient := func() (teamQueryer, error) { return client() }
+
+	if err := resolveTeamLabels(&cfg, teamPicker(ctx, newTeamClient)); err != nil {
 		fail("%v", err)
 	}
-
-	if err := resolveTeamLabels(&cfg, teamPicker(ctx, c)); err != nil {
+	c, err := client()
+	if err != nil {
 		fail("%v", err)
 	}
 
